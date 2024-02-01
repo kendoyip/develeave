@@ -1,0 +1,55 @@
+Release 2023.11.28 (11/28/2023)
+- Leave Application Email added PBTscheduler email to BCc
+
+Release 2023.10.30 (10/30/2023)
+- Fixed sickleave over 2 days email sending 
+
+Release 2023.03.01 (03/20/2023)
+- Fixed super user cancel leave problem
+- "Print Summary" button renamed to "Print Leave Summary"
+
+Release 2023.03 (03/17/2023)
+- Launch
+- Changed logic checking "within 14 days" for Partner Leave
+- Added Power BI flag to all user to determine the authority to access the power BI
+
+Release 2023.02.03 (02/17/2023)
+- Changed logic checking in consective day for sick leave
+
+Release 2023.02.02 (02/09/2023)
+- Release to overseas office for testing
+
+Release 2023.02.01 (02/03/2023)
+- Changed the wordings for email content
+
+Release 2023.01.06 (01/30/2023)
+- Changed Macy's logo and alignment in front page
+
+Release 2023.01.05 (01/27/2023)
+- Changed Macy's logo in front page
+- Changed the wordings for apply leave section from "Days Entitled for..." to "No. of Days Entitled for..."
+- Changed the wordings for apply leave section from "<leave type> balance" to "<leave type> summary"
+
+Release 2023.01.04 (01/26/2023)
+- Adjust the column position of the application in approval center : 1. Start Date, 2. End Date, 3. Working Days, 4. OOO Days
+
+Release 2023.01.03 (01/21/2023)
+- Added the display for OOO days in Approval Center 
+- Removed the display for reference number in Approval Center
+
+Release 2023.01.02 (01/17/2023)
+- Added application form attachment after submitting leave
+- Adjusted email subject for leave application
+- Added Partner Status function
+- Changed apply leave section header "Choose Leave Type" to "Select Leave Type"
+- Changed the wordings for apply leave section from "leave balance" to "<leave type> balance"
+- Changed all symbol "#" in description to "No."
+- Changed "Sick leave with Medical Cert. " to "Sick Leave with Medical Certificate "
+- Removed the display for OOO days
+
+Release 2023.01 (01/03/23) 
+- Validate start date must not be greater than end date
+
+Release 2022.27 (12/9/22)
+- Tidy Up session variables and many things
+

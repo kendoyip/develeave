@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+  </head>
+  <style>    
+      .homePage {
+        display: grid;
+        grid-template-columns: auto auto auto;
+        grid-auto-rows: auto auto auto;
+        text-align: center;
+        border: 0px;
+        margin: 0px;
+        margin-top: 10vh;        
+        padding: 0px; 
+      }
+      .homePageText { 
+        color:white;
+        margin-top:1rem;
+      }
+  </style>
+  <body style="background-color:rgb(56, 132, 219);">
+    <header style="text-align: right; font-size: bold; color: white">Powered by Regional PBT</header>
+    <h1 style="color: white; text-align:center">e-Leave@MMG Overseas</h1>
+ 
+
+    {% if (timeout_message) : %}
+    <h3 style="color: white">Your previous session was timed out ! Please login again</h3>
+    {% endif %}
+
+    <div class="homePage"> 
+          <div> 
+            <a href="{{ auth_url }}"><img src="/static/img/home.png" aria-hidden alt="Home Page"  width="300rem" height="300rem" />   </a>            
+          </div>
+          <div> 
+            <a href="{{ auth_url2 }}"><img src="/static/img/approval.png" aria-hidden alt="Vacation" width="300rem" height="300rem" />     </a>            
+          </div>
+          <div> 
+            <a href="https://macysinc.sharepoint.com/:f:/r/sites/MMGOverseas/PBT/UserMan/e-leave%20App%20User%27s%20Guides?csf=1&web=1&e=urzBDi"><img src="/static/img/manual.png" aria-hidden alt="User's Guide" width="300rem" height="300rem" /></a>            
+          </div>          
+          <div class="homePageText">Home Page</div>
+          <div class="homePageText">Approval Center</div>
+          <div class="homePageText">User's Guide</div>
+    </div>
+    
+    <!-- <h2><a style="color: white"  href="{{ auth_url }}">Please click this link to sign into Home</a></h2>    
+    <h2><a style="color: white"  href="{{ auth_url2 }}">Please click this link to sign into Approval Center</a></h2> -->
+    
+    <footer style="text-align: right; font-size: bold; color: white"></footer>
+  </body>
+</html>

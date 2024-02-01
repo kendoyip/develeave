@@ -1,0 +1,1 @@
+xcopy f:\mmgapp\dev\eleave\* .  /Y /S  /EXCLUDE:f:\mmgapp\dev\eleave\files.txt
