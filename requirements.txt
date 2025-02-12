@@ -37,8 +37,6 @@ requests==2.25.1
 six==1.15.0
 starlette==0.13.8
 starlette-session==0.4.1
-sendgrid==6.10.0
-typing-extensions==3.7.4.3
 urllib3==1.26.4
 uuid==1.30
 uvicorn==0.13.4
