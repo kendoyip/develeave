@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta 
+from dateutil.relativedelta import relativedelta
 from flask import jsonify, request, current_app, send_file, Blueprint
 from flask import session, request, jsonify
 from openpyxl import load_workbook
@@ -13,8 +14,6 @@ from openpyxl.styles.alignment import Alignment
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
 from email.mime.text import MIMEText
-from sendgrid import SendGridAPIClient
-from sendgrid.helpers.mail import Mail, Attachment, FileContent, FileName, FileType, Disposition, Personalization, Cc
 from copy import copy
 
 import pandas as pd
@@ -25,7 +24,8 @@ import smtplib
 import socket
 import json
 import os
-import re
+import io
+import operator
 import base64
 from dotenv import load_dotenv
 load_dotenv()
@@ -51,6 +51,7 @@ leaveTypes = db["leave_types"]
 leaveGroups = db["leave_groups"]
 maintenance = db["eleave_maintenance"]
 reportMap = db["fileDirectory"]
+otherLeaves = db["other_leaves"]
 
 #Global Constant
 status = list(maintenance.find({"table": { "$eq" : "globalConstant"}}))
@@ -92,6 +93,7 @@ def getUserList():
     results = col.find(query_filter, query)    ## eleave_dtl
     for result in results:   
         userList.append({ 'racf': result['staff']['racf'], 'name' : result['staff']['name']})
+    
 
     try:
         if len(userList) > 0:                             
@@ -292,6 +294,7 @@ def str2Date (psDateStr):
 def date2Str(psDate):
     return datetime.strftime(psDate, "%Y-%m-%d")
 
+
 # get staff record 
 # parameter:
 # psRacf - RACF of the user
@@ -311,6 +314,76 @@ def getLeaveTypes():
 def getLeaveGroups():
     global leaveGroupLst
     leaveGroupLst = list(leaveGroups.find({}))
+
+def getAllOffice():
+    #allOffice = ['HKG', 'REG', 'TPE', 'DEL', 'FLR', 'CHN']
+    allOffice = eleaveDtl.distinct('staff.office')
+
+    return allOffice
+
+def getAllSpecialLeave():
+    result = [ ]
+    allSpeicalLeave = list(leaveTypes.find({"other_leave": True}))
+    for rec in allSpeicalLeave:
+        result.append({'leave_type_id': rec['leave_type_id'], 'leave_type': rec['leave_type'].title()})
+
+    return result
+
+def specialLeaveRefNo(ofc, year):
+    maxRefNo = 1
+    code = ""
+
+    try:
+        allSpecialLeave = list(otherLeaves.find({"office": ofc, "year": year}))
+        maxRefNo += int (len(allSpecialLeave))
+    except:
+        pass
+
+    if ofc == "HKG":
+        code = "HK"
+
+    elif ofc == "TPE":
+        code = "TW"
+
+    elif ofc == "DEL":
+        code = "IN"
+
+    elif ofc == "REG":
+        code = "RG"
+
+    elif ofc == "CHN":
+        code = "CN"
+
+    elif ofc == "FLR":
+        code = "IT"
+
+    zerodigit = "0" * (3 - int(len(str(maxRefNo))))
+    return str(f"{code}{year}{zerodigit}{maxRefNo}")
+
+# 
+def getAllSpecialRef(racf, super, localtime):
+
+    result = [ ]
+    
+    record = list(otherLeaves.find({"racf": racf}))
+
+    # float(len(getAllLeave(racf, year, [type], False, otherRefNo)))
+
+    for rec in record:
+
+
+        if super:
+            if rec['status'] == "active":
+                result.append({'ref_no': rec['ref_no']})
+        else:
+            if rec['entitled_days'] > float(len(getAllLeave(rec['racf'], rec['year'], rec['leave_type'], False, rec['ref_no']))):
+                if rec['status'] == "active" and datetime.strptime(rec['period_end'], '%Y-%m-%d') >= localtime: 
+                    result.append({'ref_no': rec['ref_no']})
+
+    return result
+
+
+
 
 # get long ref no. for displaying 
 # parameter:
@@ -343,6 +416,7 @@ def getWorkdayName(psDateString):
 # return:
 # leave year period in string, format : "Mar 1, year - Feb 28 (or 29), year"
 def getDisplayLeaveYear(psYear):
+
     if calendar.isleap(psYear):
         return (df['gcYearStartDate'][0] + str(psYear) + " - " + df['gcYearEndDateLeap'][0] + str(psYear + 1))
     else:
@@ -368,10 +442,12 @@ def getYearEntitlement(Year, StaffRecord, LeaveType):
             if LeaveType == 'LVE02':
                 return float(rec['casual_entitlement'])
 
-def getYearCarryForward(Year, StaffRecord):
+def getYearCarryForward(Year, StaffRecord, Type):
     for rec in StaffRecord['entitlement']:
-        if int(rec['year']) == int(Year):
+        if int(rec['year']) == int(Year) and (Type == "LVE01"):
             return float(rec['carry_forward'])
+        else:
+            return 0
 
 # get leave year period
 # parameter:
@@ -423,15 +499,25 @@ def chkPeriod(psStartDate, psEndDate, psYear):
 # list of leave history in the format :
 # [{"ref_no": int, "year": int, "type": string, "startDate": string, "startTime": string, "endDate": string, "endTime": string, "status": string, "workDay": int, calendarDay: int, "ldate": datetime, "ltime": string]
 def getLeaveHistory(psYearStart, psYearEnd, psRecord):
+
+    try:
+        period = getLeaveYrPeriod(psYearStart)
+        periodStart = period.get('result')[0].get('leaveYrStart')
+        periodEnd = period.get('result')[0].get('leaveYrEnd')
+    except:
+        pass
+    
     leaveHistoryAllLst = [ ]
     yr = psYearStart
     while yr <= psYearEnd:
         for r in psRecord["leave_record"]:
-            if r["year"] == yr:
-                for d in r["details"]:
-                    for p in d["period"]:
+            #if r["year"] == yr:
+            for d in r["details"]:
+                for p in d["period"]:
+                    if  periodStart <= datetime.strptime(p["ldate"], "%Y-%m-%d") <= periodEnd:
                         currRecord = {
-                            "ref_no": r["ref_no"],
+                            "ref_no": r["ref_no"] if r["otherRefNo"] == "" else r["otherRefNo"],
+                            "other_leave": False if r["otherRefNo"] == "" else True,
                             "office": psRecord["staff"]["hr_office"],
                             "racf": psRecord["staff"]["racf"],
                             "staffname": psRecord["staff"]["name"],
@@ -458,7 +544,7 @@ def getLeaveHistory(psYearStart, psYearEnd, psRecord):
                             "lastUpdate": r["lastUpdate"],
                             "updateDate": r["updateDate"]                            
                         }
-                      
+                        
                         leaveHistoryAllLst.append (currRecord)
         yr += 1
     return (leaveHistoryAllLst)
@@ -502,22 +588,6 @@ def getLeaveEntitlement(psYear, psLeaveTypeAttr, psRecord):
 
     return (entitlementLst)
 
-# get all date slot for weekend + holidays within the year period
-# parameters:
-# psYearStart: Beginning year of the weekend and holidays required
-# psYearEnd : Ending year of the weekend and holidays required
-# psOffice : Office of the holidays required
-# return:
-# list of date slot for weekends + holidays within the year period, format : [{"ldate": datetime, "ltime": "AM"/ "PM"}]
-def getWeekendHolidays(psYearStart, psYearEnd, psOffice):
-    yr = psYearStart
-    weekendSlotLst = [ ]
-    holidaySlotLst = [ ]
-    while yr <= psYearEnd:
-        weekendSlotLst = combineTime(weekendSlotLst, getAllWeekend(yr))
-        holidaySlotLst = combineTime(holidaySlotLst, getHolidays(yr, psOffice))
-        yr += 1
-    return (combineTime(weekendSlotLst, holidaySlotLst))
 
 # get no. of working day in the time slot
 # parameter:
@@ -526,70 +596,6 @@ def getWeekendHolidays(psYearStart, psYearEnd, psOffice):
 # no. of work days 
 def getWorkDay(psPeriod):
     return (len(psPeriod) / 2)
-
-# expand leave application days to half day timeslot
-# check if the leave slot fall into holidays, skip that leave slot if it is 
-# check if the leave slot overlapped with those applied before, retrun error if it is
-# return whole leave slot otherwise
-#parameter : 
-#psStartDate : Start Date of leave applying, in string (yyyy-mm-dd) format
-#psStartTime : Start Time of leave applying, in string, either "AM" or "PM"
-#psEndDate : End Date of leave applying in string (yyyy-mm-dd) format
-#psEndTime : End Time of leave applyingm in string, either "AM" or "PM"
-#psHolidayLst : List of time slot with holidays and weekends
-#psLeaveHistoryLst : List of time slot with leave history in the format [{"ref_no" int, "year" int, "type" string, "status" string, "ldate": datetime, "ltime": "AM" / "PM"}]
-#return:
-#if no overlap, return list of leave slot for the leave applying in the format :[{"ldate": datetime, "ltime": "AM" / "PM"}]
-#if overlap, return empty list
-def checkOverlap(psStartDate, psStartTime, psEndDate, psEndTime, psYear, psOffice, psRecord, psApplyingSlotLst, psLeaveType):
-    currDate = str2Date(psStartDate)
-    currTime = psStartTime
-    leaveDtl = [ ]
-    weekendHolidaysLst = getWeekendHolidays((psYear - 1), (psYear + 1), psOffice)
-    leaveHistoryLst = getLeaveHistory((psYear - 1), (psYear + 1), psRecord)
-    #exclude leave that is canceled or rejected
-    leaveHistoryLst = list(filter(lambda r: (r["applicationStatus"].upper() != df['gcStatusCancel'][0] and r["applicationStatus"].upper() != df['gcStatusReject'][0]), leaveHistoryLst))
-    # loop through the holidays range applied
-
-    while currDate <= str2Date(psEndDate):
-        found = [ ]
-        # check if the leave slot overlapped with the leave already applied
-        overlap = filter(lambda o: (o["ldate"] == currDate) and (o["ltime"] == currTime), leaveHistoryLst)
-        if (len(list(overlap))) > 0:
-            leaveDtl = [ ]
-            leaveDtl = "Leave applied is overlapping."
-            return leaveDtl
-        # check if the leave slot overlapped with the leave applying in different rows
-        overlap = filter(lambda o: (o["ldate"] == currDate) and (o["ltime"] == currTime), psApplyingSlotLst)
-        if (len(list(overlap))) > 0:
-            leaveDtl = [ ]
-            leaveDtl = "Leave applying is overlapping."
-            return leaveDtl        
-        # check if the leave slot is in holiday and weekend, if it is not in the holiday list, "found" will be empty and proceed to record in leave detail
-        # if the leave slot is in holiday, "found" will not empty and will skip to record in leave detail
-        found = list(filter(lambda d: (d["ldate"] == currDate) and (d["ltime"] == currTime), weekendHolidaysLst))
-        if len(found) == 1 and (len(leaveDtl)) == 0:
-            leaveDtl = [ ]
-            leaveDtl = "Leave applying start in Weekends / Holidays"
-            return leaveDtl
-        if len(found) == 0:
-            isHoliday = False
-            leaveSlot = { "ldate": currDate, "ltime": currTime, "type": psLeaveType}
-            leaveDtl.append(dict(leaveSlot))
-        else:
-            isHoliday = True
-        if currTime.upper() == "PM":
-            currDate = currDate + timedelta(1)
-            currTime = "AM"
-        elif (currDate == str2Date(psEndDate)) and (psEndTime == "AM"):
-            break
-        else:
-            currTime = "PM" 
-    if (isHoliday):
-        leaveDtl = [ ]
-        leaveDtl = "Leave applying end in Weekends / Holidays"
-        return leaveDtl   
-    return leaveDtl
 
 #check leave balance
 #parameters:
@@ -709,340 +715,6 @@ def getHolidays(psYear, psOffice):
             holidaySlotLst.append (slot)
     return holidaySlotLst
 
-
-# Combine 2 time slot list and then sort by date and time.
-# parameters:
-# psLst1 : in the format : [{"ldate": datetime, "ltime": "AM" / "PM"}]
-# psLst2 : in the format : [{"ldate": datetime, "ltime": "AM" / "PM"}]
-# return : combined list in the format [{"ldate": datetime, "ltime": "AM" / "PM"}]
-def combineTime(psLst1, psLst2):
-    combinedLst = []
-
-    for s in psLst1:
-        slot = {
-            "ldate" : s["ldate"],
-            "ltime" : s["ltime"],
-            "type" : s["type"]
-        }
-        combinedLst.append(slot)
-    
-    for s in psLst2:
-        slot = {
-            "ldate" : s["ldate"],
-            "ltime" : s["ltime"],
-            "type": s["type"]
-            }
-        combinedLst.append(slot)
-
-    combinedLst = sorted(combinedLst, key=lambda d: (d['ldate'], d["ltime"]))
-    return (combinedLst)
-
-def checkConsecutiveSickLeave (psCombinedSickLeave, psMaxSlNoCert, psApplyingSlotLst):
-    slNoCertConsecutiveSlot = 0
-
-    currDate = psCombinedSickLeave[0]["ldate"]
-    currTime = psCombinedSickLeave[0]["ltime"]
-
-    currConsecutiveDay = False
-    
-    for t in psCombinedSickLeave:
-        if currDate == t["ldate"]:
-
-            if t["type"] == "LVE05" or t["type"] == "LVE04":
-                slNoCertConsecutiveSlot += 1
-                #if t["ldate"] ==  psApplyingSlotLst[0]["ldate"] and currTime == psApplyingSlotLst[0]["ltime"]:
-                if t["ldate"] ==  psApplyingSlotLst[0]["ldate"] and t["ltime"] == psApplyingSlotLst[0]["ltime"]:
-                    currConsecutiveDay = True
-                
-            currTime = "PM"
-        elif (currDate == t["ldate"] + timedelta(-1)) and (currTime == "PM") and (t["ltime"] == "AM"):
-            if t["type"] == "LVE05" or t["type"] == "LVE04":
-                slNoCertConsecutiveSlot += 1
-                #if t["ldate"] ==  psApplyingSlotLst[0]["ldate"] and currTime == psApplyingSlotLst[0]["ltime"]:
-                if t["ldate"] ==  psApplyingSlotLst[0]["ldate"] and t["ltime"] == psApplyingSlotLst[0]["ltime"]:
-                    currConsecutiveDay = True
-            currDate = t["ldate"]
-            currTime = t["ltime"]
-        else:
-            #currConsecutiveDay = True
-            if t["type"] == "LVE05" or t["type"] == "LVE04":
-                slNoCertConsecutiveSlot = 1
-                if t["ldate"] ==  psApplyingSlotLst[0]["ldate"] and t["ltime"] == psApplyingSlotLst[0]["ltime"]:
-                    currConsecutiveDay = True
-            else:
-                currConsecutiveDay = False
-                slNoCertConsecutiveSlot = 0
-            currDate = t["ldate"]
-            currTime = t["ltime"]
-
-        #print ("currDate : " + str(currDate) + " / " + "currTime : " + str(currTime))
-
-        #print ("tDate : " + str(t["ldate"]) + " / " + "tTime : " + str(t["ltime"]) + " / " + "tType : " + str(t["type"]))
-
-        #print ("consecutiveSlot: " + str(slNoCertConsecutiveSlot) + " currConsectiveDay : " + str(currConsecutiveDay))
-
-
-        if slNoCertConsecutiveSlot > (psMaxSlNoCert * 2) and currConsecutiveDay and psApplyingSlotLst[0]['type'] == 'LVE05':
-            return ({"pass": False, "error_message" : "Reminder: For any sick leave periods that exceed 2 contiguous days, sick leave certificate is required", "result": None, "daycount": slNoCertConsecutiveSlot - 1, "Status_code": 507})
-
-    return({"pass": True, "error_message": "", "result": None, "daycount": 1, "Status_code": 200}) 
-
-
-# parameters - leaveHistoryLst, Type
-# leaveHistoryLst Example: {'ref_no': 2022001, 'office': 'REG', 'racf': 'NF1BHC', 'staffname': 'BILLY CHAN', 'empID': '00013', 'dept': 'PBT', 'position': 'Regional Analyst Programmer', 'year': 2022, 'type': 'LVE05', 'sharePointId': '', 'startDate': '2022-12-05', 'startTime': 'Full Day', 'endDate': '2022-12-05', 'endTime': 'Full Day', 'applicationStatus': 'PENDING' ...
-# Type Example (String): LVE01, LVE02 
-def countConsecutiveDaysByType( psYear, psOffice, leaveHistoryLst, ApplyLeaveLst, Type):
-    consecutiveSlot = 0
-
-    applicationleave = False
-
-    LeaveHistoryLst = list(filter(lambda r: (r["applicationStatus"].upper() != df['gcStatusCancel'][0] and r["applicationStatus"].upper() != df['gcStatusReject'][0] and r["type"] in Type), leaveHistoryLst))
-    LeaveHistoryLst.sort(key=lambda x: x.get('ldate'))
-    combinedTimeSlot = combineTime(LeaveHistoryLst, ApplyLeaveLst)
-    weekendHolidaysLst = getWeekendHolidays((psYear - 1), (psYear + 1), psOffice)
-    combinedTimeSlot = combineTime (combinedTimeSlot, weekendHolidaysLst)
-
-
-    currDate = combinedTimeSlot[0]["ldate"]
-    currTime = combinedTimeSlot[0]["ltime"]
-
-    maxvalue = 0
-    canQuit = False
-
-    for t in combinedTimeSlot:
-        if currDate == t["ldate"] and t["type"]:
-            if t["type"] == "weekend" or t["type"] == "holiday":
-                consecutiveSlot = consecutiveSlot
-            else:
-                consecutiveSlot += 1
-            currTime = "PM"
-        elif (currDate == t["ldate"] + timedelta(-1)) and (currTime == "PM") and (t["ltime"] == "AM"):
-            if t["type"] == "weekend" or t["type"] == "holiday":
-                consecutiveSlot = consecutiveSlot
-                currDate = t["ldate"]
-                currTime = t["ltime"]
-            else:
-                consecutiveSlot += 1
-                currDate = t["ldate"]
-                currTime = t["ltime"]
-        else:
-            if t["type"] in Type:
-                consecutiveSlot = 1
-            else:
-                consecutiveSlot = 0
-            currDate = t["ldate"]
-            currTime = t["ltime"]
-        #print ("currDate : " + str(currDate) + " / " + "currTime : " + str(currTime)) #for my checking
-        #print ("tDate : " + str(t["ldate"]) + " / " + "tTime : " + str(t["ltime"]) + " / " + "tType : " + str(t["type"])) #for my checking
-        #print ("consecutiveSlot: " + str(consecutiveSlot)) #for my checking
-
-        #if str((currDate).year) == "2023":
-
-        #    print ("currDate : " + str(currDate) + " / " + "currTime : " + str(currTime)) #for my checking
-        #    print ("tDate : " + str(t["ldate"]) + " / " + "tTime : " + str(t["ltime"]) + " / " + "tType : " + str(t["type"])) #for my checking
-        #    print ("consecutiveSlot: " + str(consecutiveSlot)) #for my checking
-        #    print ("maxvalue :" + str(maxvalue))
-
-        # check apply leave is in checking period
-        if (ApplyLeaveLst[-1]['ldate'] == currDate) and currTime == ApplyLeaveLst[-1]["ltime"]:
-            canQuit = True
-        
-        if consecutiveSlot > 0 :
-            maxvalue = consecutiveSlot
-        if consecutiveSlot == 0 and maxvalue > 0 and canQuit:
-            consecutiveSlot = maxvalue / 2
-            return consecutiveSlot
-    
-    
-    workDay = getWorkDay(ApplyLeaveLst)
-    if workDay > consecutiveSlot:
-        consecutiveSlot = workDay
-
-
-    return consecutiveSlot
-
-
-# check consecutive days of the leave applying and see if it exceeds the consecutive days allowed.
-# parameters: 
-# psCombinedTimeSlot : list of applying leave, leave already applied, holidays and weekend in the format [{"ldate": datetime, "ltime": "AM" / "PM"}]
-# psLimit : max. consecutive days allowed 
-# return :
-# total consecutive days or the max. consecutive days allowed + 0.5 (when the consective days exceeds the days allowed, it will stop checking and return.)
-def checkConsecutiveDays (psYear, psOffice, psRecord, psApplyingSlotLst, psLeaveTypeAttr):
-    consecutiveSlot = -3
-    groupAttrLst = list(filter(lambda r: (r["groupID"] == psLeaveTypeAttr.get("leave_group")), leaveGroupLst))[0]
-    if groupAttrLst.get("max_consecutive_days", "")  != "":
-        relatedLveLst = []
-        for lve in leaveTypeLst:
-            #if lve["leave_group"] == groupAttrLst.get("groupID"):
-            if lve["consecutive_days_group"] == psLeaveTypeAttr.get("consecutive_days_group"):
-                relatedLveLst.append(lve["leave_type_id"])
-    
-        leaveHistoryLst = getLeaveHistory((psYear - 1), (psYear + 1), psRecord)
-        # if leave is sick leave with cert or sick leave with no cert, check the Consecutive Sick Leave with no cert days
-        if groupAttrLst.get("sick_leave", False):
-            relatedSlLst = []
-            for sl in leaveTypeLst:
-                slGrpAttrLst = list(filter(lambda r: (r["groupID"] == sl["leave_group"]), leaveGroupLst))[0]
-                if slGrpAttrLst.get("sick_leave", False):
-                    relatedSlLst.append(sl["leave_type_id"])
-                    if slGrpAttrLst.get("max_consecutive_days", "") != "":
-                        maxConsecutiveSlNoCert = slGrpAttrLst.get("max_consecutive_days")
-            slLeaveHistoryLst = list(filter(lambda r: (r["applicationStatus"].upper() != df['gcStatusCancel'][0] and r["applicationStatus"].upper() != df['gcStatusReject'][0] and r["type"] in relatedSlLst), leaveHistoryLst))
-            combinedTimeSlot = combineTime(slLeaveHistoryLst, psApplyingSlotLst)
-
-            # Added to check weekend and holiday if sick leave
-            slweekendHolidaysLst = getWeekendHolidays((psYear - 1), (psYear + 1), psOffice)
-            combinedTimeSlot = combineTime (combinedTimeSlot, slweekendHolidaysLst)
-
-            result = checkConsecutiveSickLeave(combinedTimeSlot, maxConsecutiveSlNoCert, psApplyingSlotLst)
-            if not result.get("pass"):
-                return (result)
-        leaveHistoryLst = list(filter(lambda r: (r["applicationStatus"].upper() != df['gcStatusCancel'][0] and r["applicationStatus"].upper() != df['gcStatusReject'][0] and r["type"] in relatedLveLst), leaveHistoryLst))
-        combinedTimeSlot = combineTime(leaveHistoryLst, psApplyingSlotLst)
-        if groupAttrLst.get("consecutive_include_holidays", False):
-            weekendHolidaysLst = getWeekendHolidays((psYear - 1), (psYear + 1), psOffice)
-            combinedTimeSlot = combineTime (combinedTimeSlot, weekendHolidaysLst)
-    
-        currDate = combinedTimeSlot[0]["ldate"]
-        currTime = combinedTimeSlot[0]["ltime"]
-
-        currConsecutiveDay = False
-
-        for t in combinedTimeSlot:
-            #print (str(currDate) + " / " + str(t["ldate"]) + " consecutiveSlot: " + str(consecutiveSlot))
-            if currDate == t["ldate"]:
-                consecutiveSlot += 1
-                if t["ldate"] ==  psApplyingSlotLst[0]["ldate"] and currTime == psApplyingSlotLst[0]["ltime"]:
-                    currConsecutiveDay = True
-                currTime = "PM"
-            elif (currDate == t["ldate"] + timedelta(-1)) and (currTime == "PM") and (t["ltime"] == "AM"):
-                consecutiveSlot += 1
-                if t["ldate"] ==  psApplyingSlotLst[0]["ldate"] and currTime == psApplyingSlotLst[0]["ltime"]:
-                    currConsecutiveDay = True
-                currDate = t["ldate"]
-                currTime = t["ltime"]                
-            else:
-                if t["ldate"].strftime('%A') in ["Saturday","Sunday"]:
-                    consecutiveSlot = -3
-                else:
-                    consecutiveSlot = 0
-                #consecutiveSlot = -3
-                #if t["ldate"] ==  psApplyingSlotLst[0]["ldate"]:
-                #    consecutiveSlot = 0
-                currDate = t["ldate"]
-                currTime = t["ltime"]
-                currConsecutiveDay = False
-
-            if consecutiveSlot > (groupAttrLst.get("max_consecutive_days", 0) * 2) and currConsecutiveDay:
-                #if groupAttrLst.get("groupID") != 1:
-                    #return ({"pass": False, "error_message" : "Reminder: For any sick leave periods that exceed 2 contiguous days, sick leave certificate is required", "result": None,  "Status_code": 506})
-                if groupAttrLst.get("groupID") == 1:
-                    return ({"pass": False, "error_message" : "Reminder: Maximum vacation taken at any one time is 2 WEEKS including Public Holidays, Saturdays and Sundays", "result": None,  "Status_code": 506})
-   
-    elif psApplyingSlotLst[0]['type'] == 'LVE04':
-
-        relatedSlLst = ['LVE04', 'LVE05']
-
-        leaveHistoryLst = getLeaveHistory((psYear - 1), (psYear + 1), psRecord)
-
-        slLeaveHistoryLst = list(filter(lambda r: (r["applicationStatus"].upper() != df['gcStatusCancel'][0] and r["applicationStatus"].upper() != df['gcStatusReject'][0] and r["type"] in relatedSlLst), leaveHistoryLst))
-        combinedTimeSlot = combineTime(slLeaveHistoryLst, psApplyingSlotLst)
-        # Added to check weekend and holiday if sick leave
-        slweekendHolidaysLst = getWeekendHolidays((psYear - 1), (psYear + 1), psOffice)
-        combinedTimeSlot = combineTime (combinedTimeSlot, slweekendHolidaysLst)
-
-        result = checkConsecutiveSickLeave(combinedTimeSlot, 1, psApplyingSlotLst)
-
-        
-        if not result.get("pass"):
-            return (result)
-
-    else:
-
-        return({"pass": True, "error_message": "", "result": None, "Status_code": 200}) 
-     
-    return ({"pass": True, "error_message": "", "result": None,  "Status_code": 200})
-
-# count the total calendar date.
-# input : list of leave applied - psPeriod, list of leave applied + holidays +weekend - psCombinedSlotLst
-# total calendar date = 
-#   consecutive calendar days (holidays + weekend) before the leave period
-#   consecutive calendar days for the leave period +
-#   consecutive calendar days (holidays + weekend) after the leave period
-# parameter:
-# psPeriod - leave slots that need to check for calendar day in the format [{"ldate" : datetime, "ltime": "AM"/ "PM"} ]
-# psCombinedSlotLst - leave slots that need to check + all leave applied before + holidays + weekend in the format  [{"ldate" : datetime, "ltime": "AM"/ "PM"} ]
-# return :
-# No. of calendarDay in int.
-def getCalendarDay(psYear, psOffice, psRecord, psPeriod, psLeaveTypeAttr):
-    weekendHolidays = getWeekendHolidays((psYear - 1), (psYear + 1), psOffice)
-    leaveHistoryLst = getLeaveHistory((psYear - 1), (psYear + 1), psRecord)
-    relatedLveLst = []
-    for lve in leaveTypeLst:
-        if lve["calendar_days_group"] == psLeaveTypeAttr.get("calendar_days_group"):
-            relatedLveLst.append(lve["leave_type_id"])
-    #leaveHistoryLst = list(filter(lambda r: (r["applicationStatus"].upper() != df['gcStatusCancel'][0] and r["applicationStatus"].upper() != df['gcStatusReject'][0]), leaveHistoryLst))
-    leaveHistoryLst = list(filter(lambda r: (r["applicationStatus"].upper() != df['gcStatusCancel'][0] and r["applicationStatus"].upper() != df['gcStatusReject'][0] and r["type"] in relatedLveLst), leaveHistoryLst))
-    combinedSlotLst = combineTime(weekendHolidays, leaveHistoryLst)
-    combinedSlotLst = combineTime(combinedSlotLst, psPeriod)
-    # count the consecutive calendar days (holidays + weekend) before the leave period
-    currPosition = next((index for (index, d) in enumerate(combinedSlotLst) if (d["ldate"] == psPeriod[0]["ldate"]) and (d["ltime"] == psPeriod[0]["ltime"])), None)
-
-    calendarDayBefore = 0
-    currTime = psPeriod[0]["ltime"]
-    currDate = psPeriod[0]["ldate"]
-    while currPosition != 0:
-        if currDate == combinedSlotLst[currPosition]["ldate"] and currTime == combinedSlotLst[currPosition]["ltime"]:
-            currDate = combinedSlotLst[currPosition]["ldate"]
-            currTime = combinedSlotLst[currPosition]["ltime"]
-            currPosition -= 1
-        elif currDate == combinedSlotLst[currPosition]["ldate"] and currTime == "PM" and combinedSlotLst[currPosition]["ltime"] == "AM":
-            calendarDayBefore += 0.5
-            currDate = combinedSlotLst[currPosition]["ldate"]
-            currTime = combinedSlotLst[currPosition]["ltime"]
-            currPosition -= 1
-        elif currDate == combinedSlotLst[currPosition]["ldate"] + timedelta(days = 1) and currTime == "AM" and combinedSlotLst[currPosition]["ltime"] == "PM":
-            calendarDayBefore += 0.5
-            currDate = combinedSlotLst[currPosition]["ldate"]
-            currTime = combinedSlotLst[currPosition]["ltime"]
-            currPosition -= 1
-        else:
-            break
-
-    # count the consecutive calendar days (holidays + weekend) after the leave period
-    currTime = psPeriod[-1]["ltime"]
-    currDate = psPeriod[-1]["ldate"]
-    currPosition = next((index for (index, d) in enumerate(combinedSlotLst) if (d["ldate"] == psPeriod[-1]["ldate"]) and (d["ltime"] == psPeriod[-1]["ltime"])), None)
-    calendarDayAfter = 0
-    while currPosition != (len(combinedSlotLst) - 1):
-        if currDate == combinedSlotLst[currPosition]["ldate"] and currTime == combinedSlotLst[currPosition]["ltime"]:
-            currDate = combinedSlotLst[currPosition]["ldate"]
-            currTime = combinedSlotLst[currPosition]["ltime"]
-            currPosition += 1      
-        elif currDate == combinedSlotLst[currPosition]["ldate"] and currTime == "AM" and combinedSlotLst[currPosition]["ltime"] == "PM":
-            calendarDayAfter += 0.5
-            currDate = combinedSlotLst[currPosition]["ldate"]
-            currTime = combinedSlotLst[currPosition]["ltime"]
-            currPosition += 1
-        elif currDate == combinedSlotLst[currPosition]["ldate"] - timedelta(days = 1) and currTime == "PM" and combinedSlotLst[currPosition]["ltime"] == "AM":
-            calendarDayAfter += 0.5
-            currDate = combinedSlotLst[currPosition]["ldate"]
-            currTime = combinedSlotLst[currPosition]["ltime"]
-            currPosition += 1
-        else:
-            break
-        
-    # count the consecutive calendar days for the leave period
-    firstPosition = next((index for (index, d) in enumerate(combinedSlotLst) if (d["ldate"] == psPeriod[0]["ldate"]) and (d["ltime"] == psPeriod[0]["ltime"])), None)
-    lastPosition = next((index for (index, d) in enumerate(combinedSlotLst) if (d["ldate"] == psPeriod[-1]["ldate"]) and (d["ltime"] == psPeriod[-1]["ltime"])), None)
-
-    calendarDayLeave = ((lastPosition - firstPosition) / 2) + 0.5
-    calendarDayTotal = calendarDayBefore + calendarDayLeave + calendarDayAfter
-
-
-    return (calendarDayTotal)
-
 # get new leave application ref no.
 # parameters :
 # psLeaveHistoryLst : List of time slot with leave history in the format [{"ref_no" int, "year" int, "type" string, "status" string, "ldate": datetime, "ltime": "AM" / "PM"}]
@@ -1050,15 +722,32 @@ def getCalendarDay(psYear, psOffice, psRecord, psPeriod, psLeaveTypeAttr):
 # return:
 # if this is the first leave application in the year, return as "leave year" + "001"
 # else, return the max ref_no + 1
-def getNewRefNo(psYear, psRecord):
-    currYearRecordLst = list(filter(lambda r: (r["year"] == psYear), psRecord["leave_record"]))
+#def getNewRefNo(psYear, psRecord):
+#    currYearRecordLst = list(filter(lambda r: (r["year"] == psYear), psRecord["leave_record"]))
     
-    if len(currYearRecordLst) == 0:
-        return (int(str(psYear) + "001"))
-    else:
-        maxRefNo = max(r["ref_no"] for r in currYearRecordLst)
-        return (maxRefNo + 1)
+#    if len(currYearRecordLst) == 0:
+#        return (int(str(psYear) + "001"))
+#    else:
+#        maxRefNo = max(r["ref_no"] for r in currYearRecordLst)
+#        return (maxRefNo + 1)
 
+def getNewRefNo(year, racf):
+    maxRefNo = 1
+    try: 
+
+        record = getStaffRecord(racf)
+        leave_records = record.get('leave_record', False)
+        if leave_records:
+            for record in leave_records:
+                if year == record.get('year'):
+                    maxRefNo += 1
+        
+        zerodigit = "0" * (3 - int(len(str(maxRefNo))))
+
+    except:
+        zerodigit = "0" * (3 - int(len(str(maxRefNo))))
+
+    return int(f"{year}{zerodigit}{maxRefNo}")
 
 # update / save leave record to database
 # parameters:
@@ -1316,7 +1005,7 @@ def getApplicationForm(ref, racf):
                     DaysOfPending = leaveType['pending']
                     DaysOfleft = leaveType['balance']
                     if rec['type'] == 'LVE01':
-                        DaysOfCarryForward = getYearCarryForward(rec['year'], StaffRecord)
+                        DaysOfCarryForward = getYearCarryForward(rec['year'], StaffRecord, rec['type'])
                         DaysOfEntitlement = str(DaysOfCarryForward) + " (" + str(int(rec['year']-1)) + ") " + "+ " + str(getYearEntitlement(rec['year'], StaffRecord, rec['type'])) + " (" + str(int(rec['year'])) + ") "
                     elif rec['type'] == 'LVE02':
                         DaysOfCarryForward = 0
@@ -1333,7 +1022,11 @@ def getApplicationForm(ref, racf):
                         DaysOfCarryForward = 0
                         DaysOfEntitlement = "N/A"
                         DaysOfleft = "N/A"
-
+                    else:
+                        DaysOfCarryForward = 0
+                        DaysOfEntitlement = "N/A"
+                        DaysOfleft = "N/A"
+                    
 
             get_approver1 = ""
             get_pos_approver1 = ""
@@ -1361,18 +1054,21 @@ def getApplicationForm(ref, racf):
 
             try:
                 TakenApproved = float(DaysOfApproved + DaysOfPending)
+                NoDaysTakenApproved = str(float(TakenApproved)) + " (" + str(float(DaysOfApproved)) + " + "+ str(float(DaysOfPending)) + ") "
             except:
                 TakenApproved = "NA"
+                NoDaysTakenApproved = "N/A"
 
             # Go back to build the structure for excel output file
             # Array item label must be the same as MongoDB cell field in fileDrectory
+
             leaveRecord = {
                 "staff": StaffRecord['staff']['name'],
                 "racf": racf,
                 "position": StaffRecord['staff']['position'],
                 "dept": StaffRecord['staff']['dept'],
                 "date_joined": StaffRecord['staff']['date_join'],
-                "ref_no": ref,
+                "ref_no": ref if rec['otherRefNo'] == "" else rec['otherRefNo'],
                 "sharePointid": DissharePointid,
                 "approver1": get_approver1,
                 "approver_pos1": get_pos_approver1,
@@ -1384,7 +1080,7 @@ def getApplicationForm(ref, racf):
                 "approver_pos3": get_pos_approver3,
                 "approval_date3": rec['approval']['approval_date3'],
                 "NoDaysEntitlement": DaysOfEntitlement ,
-                "NoDaysTakenApproved": str(float(TakenApproved)) + " (" + str(float(DaysOfApproved)) + " + "+ str(float(DaysOfPending)) + ") ",
+                "NoDaysTakenApproved": NoDaysTakenApproved,
                 "NoDaysLeft": DaysOfleft,
                 "type_id": rec["type"],
                 "leaveTypeBalance": list(filter(lambda r: (r["leave_type_id"].upper() == rec["type"]), leaveTypeLst))[0].get("leave_type") + " BALANCE",
@@ -1506,151 +1202,100 @@ def geticalFile(organizer, title, content, startDate, startTime, endDate, endTim
     return out
 
 
+def postmarker(message, title, sendTo, sendCC, attachment=None, attachmentname=None):
 
+    # Convert bytesIO attachment list to encode varaible for restful API
+    attachedfiles = [ ]
 
-def checkSSL(host,port,timeout=1):
-    sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM) #presumably 
-    sock.settimeout(timeout)
-    try:
-       sock.connect((host,port))
-    except:
-       return 404
-    else:
-       sock.close()
-       return 250
+    if attachment is not None:
+        for index, bytesio in enumerate(attachment):
+            bytesio.seek(0)
+            content = bytesio.read()
 
-def sendGrid(message, title, sendTo, sendCC, attachment=None, attachmentname=None):
+            encoded = base64.b64encode(content).decode('utf-8')
 
-    # Create the SendGrid message
+            attachedfiles.append({'Name': attachmentname[index],
+                                'Content': encoded,
+                                'ContentType' : 'application/octet-stream'
+            })
 
-    # line break
-    html_message = '<br>'.join(message.split('\n'))
-    sg_message = Mail(
-        from_email='noreply@mmgoverseas.app',
-        to_emails=sendTo,
-        subject=title,
-        html_content=html_message
-    )        
-
-    # prevent empty cc list program error
-    if sendCC:
-        sendCC_list = list(sendCC.split(";"))
-        sendCC_list = list(set([value for value in sendCC_list if len(value) >= 8]))
-        cc_mail = [] 
-
-
-        for email in sendCC_list:
-            cc_mail.append(Cc(email, email)) 
-
-        n = len(sendCC_list)
-
-        cc_mail_first_n = cc_mail[:n]
-
-        
-        sg_message.add_cc (cc_mail_first_n)
-
-    # BCc
-    sg_message.add_bcc(os.environ.get('Send_BCc'))
-        
-    # Add attachments if specified
-    if attachment and attachmentname:
-        for index, file in enumerate(attachment):
-
-            encoded_file = base64.b64encode(file.getvalue()).decode()
-
-            attached_file = Attachment(
-                FileContent(encoded_file),
-                FileName(attachmentname[index]),
-                FileType('application/octet-stream'),
-                Disposition('attachment')
-            )
-            sg_message.attachment = attached_file
-
-    try:
-        # Send the message using the SendGrid API
-        sg = SendGridAPIClient(os.environ.get('SENDGRID_API_KEY'))
-        response = sg.send(sg_message)
-        print(response.status_code)
-    except Exception as e:
-        print(e.message)
-
-
-
-def Mailer_to_Go(message, title, sendTo, sendCC, attachment = "", attachmentname = ""):
-
-    # sender
-    try: #Heroku
-        sender_user = 'noreply'
-        sender_email = "@".join([sender_user, current_app.mailertogo_domain])
-        sender_name = 'noreply@mmgoverseas.app'
-    except: #Local
-        sender_email = 'noreply' + "@" + os.environ["MAILERTOGO_DOMAIN"]
-
-    # recipient
-    # By Vincent Cheng temp on 11/23/22
-    #recipient_email = "ken.yip@macys.com;vincent.cheng@macys.com"
-    #recipient_email = "brown.michael.v@gmail.com"
-    #recipient_email = "ken.yip@macysinc.onmicrosoft.com;vincent.cheng@macysinc.onmicrosoft.com"    
-
-    #Get recipient domain name
-    try: #Heroku
-        recipient_domain = current_app.recipient_domain
-        local_recipient_domain = current_app.macys_domain
-        recipient_email = sendTo.replace(local_recipient_domain, recipient_domain)
-    except: #Local
-        recipient_domain = current_app.config['recipient_domain']
-        recipient_email = sendTo
-
-    #Get recipient cc domain name
-    try: #Heroku
-        recipient_domain = current_app.recipient_domain
-        local_recipient_domain = current_app.macys_domain
-        recipient_cc_email = sendCC.replace(local_recipient_domain, recipient_domain)
-    except: #Local
-        recipient_domain = current_app.config['recipient_domain']
-        recipient_cc_email = sendCC
-
-    # subject
-    subject = title
-
-    # text body
+    # convert html body to email
     body_plain = message
-
     # html body
     line_break = '\n' #used to replace line breaks with html breaks
-    body_html = f'''<html>
-        <head></head>
-        <body>
-        {'<br/>'.join(body_plain.split(line_break))}
-        </body>
-        </html>'''
+    body_html = f'''
+                <html>
+                <head></head>
+                <body>
+                {'<br/>'.join(body_plain.split(line_break))}
+                </body>
+                </html>
+                '''
 
+    headers = { 'Content-Type': 'application/json', 
+                'X-Postmark-Server-Token': os.environ.get('POSTMARKER_API_KEY'), 
+                'Accept':'application/json'}
+
+    parameters = {
+                  'MessageStream': 'e-leave',
+                  'From': os.environ.get('EMAIL_SENDER'), 
+                  'To': sendTo, 
+                  'Cc': sendCC,
+                  'Bcc': os.environ.get('Send_BCc'),
+                  'Subject': title, 
+                  'HtmlBody': body_html,
+                  'Attachments':  attachedfiles
+                  }
+    
+    import json
+    data = json.dumps(parameters)
+
+    import requests
+    r = requests.post('https://api.postmarkapp.com/email', headers=headers, data=data)
+
+    response = json.loads(r.text)
+    if response['ErrorCode'] == 0:
+        print('Message ID = %s' % response['MessageID'])
+    else:
+        print('Message not sent')
+
+def localSend(message, title, sendTo, sendCC, attachment=None, attachmentname=None):
+
+    sender = os.environ.get('EMAIL_SENDER')
+
+    # subject, text body
+    subject = title
+    body_plain = message
+    # html body
+    line_break = '\n' #used to replace line breaks with html breaks
+    body_html = f'''
+                <html>
+                <head></head>
+                <body>
+                {'<br/>'.join(body_plain.split(line_break))}
+                </body>
+                </html>
+                '''
+    
     # create message container
     message = MIMEMultipart('alternative')
     message['Subject'] = subject
-    message['From'] = sender_email
-    message['To'] = recipient_email
-    message['Cc'] = recipient_cc_email
-
-    print (message['From'])
-    print (message['To'])
-    print (message['Cc'])
+    message['From'] = sender
+    message['To'] = sendTo
+    message['Cc'] = sendCC
 
     # prepare plain and html message parts
     part1 = MIMEText(body_plain, 'plain')
     part2 = MIMEText(body_html, 'html')
-
     # attach parts to message
-
     message.attach(part1)
     message.attach(part2)
+    # convert recipient as list
+    sendTo = list(sendTo.split(";"))
+    sendCC = list(sendCC.split(";"))
 
-    # transform recipient to list
-    recipient_email = list(recipient_email.split(";"))
-    recipient_cc_email = list(recipient_cc_email.split(";"))
-
-    # Attachment Part
-    if len(attachment) > 0:
+    # attachment
+    if attachment is not None and attachment != "":
         for index, bytesIOfile in enumerate(attachment):
             try:
                 part3 = MIMEApplication(bytesIOfile.getvalue())
@@ -1660,45 +1305,21 @@ def Mailer_to_Go(message, title, sendTo, sendCC, attachment = "", attachmentname
                 message.attach(part3)
             except:
                 pass
-    else:
-        pass
 
-    try:
-        host = current_app.mailertogo_host
-        port = current_app.mailertogo_port
-    except:
-        host = os.environ["MAILERTOGO_SMTP_HOST"]
-        port = os.environ["MAILERTOGO_SMTP_PORT"]
-        sc = checkSSL(host, int(port))
-        if sc == 404:
-            print ("Error Code 404, SMTP connection timeout.")
-            quit()
-    else:
-        pass
+    # get local host and port
+    host = os.environ.get('SMTP_HOST')
+    port = os.environ.get('SMTP_PORT')
 
-    # send the message.
-    try:
-        server = smtplib.SMTP(host, port)
-        server.ehlo()
-        server.starttls()
-        server.ehlo()
-        server.login(current_app.mailertogo_user, current_app.mailertogo_password)
-        server.sendmail(sender_email, (recipient_email + recipient_cc_email), message.as_string())
-        server.close()
-    except Exception as e:
-        server = smtplib.SMTP(host, port)
-        server.ehlo()
-        server.sendmail(sender_email, (recipient_email + recipient_cc_email), message.as_string())
-        server.close()
-        print ("Local SMTP Email Sent!")
-    else:
-        print ("Email sent!")
+    # send the message
+    server = smtplib.SMTP(host, port)
+    server.ehlo()
+    server.sendmail(sender, (sendTo + sendCC), message.as_string())
+    server.close()
+
+def sendEmail(psRecord, psRefNo, otherRefNo, psAction, psRequest, finalapprover = 1, currentapprover = 1):
 
 
-
-def sendEmail(psRecord, psRefNo, psApprovalStatus, psAction, psRequest, finalapprover = 1, currentapprover = 1):
-    
-    leaveContent = list(filter(lambda r: (r["ref_no"] == psRefNo), psRecord["leave_record"]))
+    leaveContent = list(filter(lambda r: (r["ref_no"] == int(psRefNo)), psRecord["leave_record"]))
     leavePeriod = ""
     for leaveitem in leaveContent[0]["details"]:
         start_date = datetime.strptime(str(leaveitem.get("start_date")), '%Y-%m-%d').strftime('%m/%d/%Y')
@@ -1707,8 +1328,6 @@ def sendEmail(psRecord, psRefNo, psApprovalStatus, psAction, psRequest, finalapp
         end_time = leaveitem.get("end_time")
         leavePeriod = leavePeriod + datetime.strptime(str(leaveitem.get("start_date")), '%Y-%m-%d').strftime('%m/%d/%Y') + " " + leaveitem.get("start_time") + " to " + datetime.strptime(str(leaveitem.get("end_date")), '%Y-%m-%d').strftime('%m/%d/%Y') + " " + leaveitem.get("end_time") + "\n"
     
-
-
     # Make Full to AM PM
     if (start_time == "Full Day" and end_time == "Full Day"): 
         start_time = "AM"
@@ -1734,13 +1353,13 @@ def sendEmail(psRecord, psRefNo, psApprovalStatus, psAction, psRequest, finalapp
 
     for leaveitem in leaveContent[0]["details"]:
         try:
-            if leaveitem.get("no_of_consective") > sickleave_count: sickleave_count = leaveitem.get("no_of_consective")
+            if (leaveitem.get("no_of_consective") > sickleave_count) and (leaveContent[0]["type"] in ['LVE04', 'LVE05']): sickleave_count = leaveitem.get("no_of_consective")
         except:
             sickleave_count = 0
 
     cc_sl_limit_list = ""
 
-    if (int(sickleave_count) > 2):
+    if (int(sickleave_count) > 2) :
         # Make email list for sending out to specific recipient by defined cc_sl_limit in MongoDB
         cc_sl_limit = str(psRecord["staff"]["cc_sl_limit"]).replace(",", ";")
         cc_sl_limit = cc_sl_limit.split(";")
@@ -1754,13 +1373,7 @@ def sendEmail(psRecord, psRefNo, psApprovalStatus, psAction, psRequest, finalapp
     
     cc_sl_limit_list = str(cc_sl_limit_list)
 
-
-    # Manual make type caption
-    if leaveContent[0]["type"] == "LVE01": typename = "ANNUAL LEAVE"
-    elif leaveContent[0]["type"] == "LVE02": typename = "CASUAL/FESTIVITIES LEAVE"
-    elif leaveContent[0]["type"] == "LVE03": typename = "WORK FROM HOME"
-    elif leaveContent[0]["type"] == "LVE04": typename = "SICK LEAVE - WITH MEDICAL CERTIFICATE"
-    elif leaveContent[0]["type"] == "LVE05": typename = "SICK LEAVE - NO MEDICAL CERTIFICATE"
+    typename = list(leaveTypes.find({'leave_type_id': leaveContent[0]["type"]}))[0]['leave_type']
 
     tz = leaveContent[0]["timeZone"]
 
@@ -1772,8 +1385,6 @@ def sendEmail(psRecord, psRefNo, psApprovalStatus, psAction, psRequest, finalapp
     # ical file
     icsmessage = "(Optional) You may double-click the Outlook Calendar.ics to add this event to your calendar.  If you cancel it later, you will need to manually remove this event from the calendar. "
     cancelicsmessage = "If this calendar event has been previously added, please remember to manually delete this event."
-
-
 
     # Manual make current approver
     next_approver = ""
@@ -1793,7 +1404,10 @@ def sendEmail(psRecord, psRefNo, psApprovalStatus, psAction, psRequest, finalapp
             next_approver = ""
 
     # Manual make reference number in HR format i.e. REG2022001KWY
-    ref_no_hr = str(psRecord["staff"]["hr_office"]) + str(psRefNo) + str(psRecord["staff"]["racf"][-3:])
+    ref_no = getDisplayRefNo(psRefNo=int(psRefNo), psOffice=psRecord["staff"]["hr_office"], psRacf=psRecord["staff"]["racf"])
+
+    if otherRefNo == "":
+        otherRefNo = ref_no
 
     # Manual make application status per pending situation
     Approval_Status = applicationStatusForEmail(leaveContent, finalapprover, psRequest, psAction)
@@ -1806,36 +1420,36 @@ def sendEmail(psRecord, psRefNo, psApprovalStatus, psAction, psRequest, finalapp
         title = "<E-LEAVE> " + str(psRecord["staff"]["name"]) + " (" + str(psRecord["staff"]["dept"]) + ") " + " - " + "Apply " + str(typename) + " #PENDING"
         message = "Dear People Leader," + "\n" + "\n"  + "Please click the following link to approve:  https://eleave.mmgoverseas.app/#/ApprovalCenter" + "\n" + "\n" + "Leave Period" + "\n" + leavePeriod + "\n" + "Thanks," + "\n" + "e-Leave"
         try:
-            sendGrid(message, title, sendTo, sendCc,"","")
+            postmarker(message, title, sendTo, sendCc, None, None)
         except:
-            pass
+            localSend(message, title, sendTo, sendCc)
         # Send confirmation email to application
         sendTo = psRecord["staff"]["alteremail"] if psRecord["staff"]["alteremail"] is not None else psRecord["staff"]["email"]
         sendCc = ""
         title = "<E-LEAVE> " + str(psRecord["staff"]["name"]) + " (" + str(psRecord["staff"]["dept"]) + ") " + " - " + "Apply " + str(typename)
         message = "Dear Applicant," + "\n" + "\n" + "Your application has been sent to your people leader for approval successfully. "  + "\n" + "\n" + "Leave Period" + "\n" + leavePeriod + "\n"  + "\n"  + "Thanks," + "\n" + "e-Leave"
         try:
-            sendGrid(message, title, sendTo, sendCc,"","")
+            postmarker(message, title, sendTo, sendCc, None, None)
         except:
-            pass
+            localSend(message, title, sendTo, sendCc)
     elif (psRequest == df['gcActionCancel'][0]) and (psAction == df['gcActionCancel'][0]):
         sendTo = getStaffRecord(psRecord["staff"]["approver1"])["staff"]["alteremail"] if getStaffRecord(psRecord["staff"]["approver1"])["staff"]["alteremail"] is not None else getStaffRecord(psRecord["staff"]["approver1"])['staff']["email"]
         sendCc = ""
         title = "<E-LEAVE> " + str(psRecord["staff"]["name"]) + " (" + str(psRecord["staff"]["dept"]) + ") " + " - " + "Cancel " + str(typename) + " #PENDING"
         message = "Dear People Leader," + "\n" + "\n"  + "Please click the following link to approve:  https://eleave.mmgoverseas.app/#/ApprovalCenter" + "\n" + "\n" + "Leave Period" + "\n" + leavePeriod + "\n" + "Thanks," + "\n" + "e-Leave"
         try:
-            sendGrid(message, title, sendTo, sendCc,"","")
+            postmarker(message, title, sendTo, sendCc, None, None)
         except:
-            pass        
+            localSend(message, title, sendTo, sendCc)   
         # Send confirmation email to application
         sendTo = psRecord["staff"]["alteremail"] if psRecord["staff"]["alteremail"] is not None else psRecord["staff"]["email"]
         sendCc = ""
         title = "<E-LEAVE> " + str(psRecord["staff"]["name"]) + " (" + str(psRecord["staff"]["dept"]) + ") " + " - " + "Cancel " + str(typename)
         message = "Dear Applicant," + "\n" + "\n" + "Your application has been sent to your people leader for cancel approval successfully. "  + "\n" + "\n" + "Leave Period" + "\n" + leavePeriod + "\n"  + "\n"  + "Thanks," + "\n" + "e-Leave"
         try:
-            sendGrid(message, title, sendTo, sendCc,"","")
+            postmarker(message, title, sendTo, sendCc, None, None)
         except:
-            pass
+            localSend(message, title, sendTo, sendCc)
     # Approved by approver must send to applicant and next approver , if it is final approver, it will send out the sick leave limit list to HR
     if psAction == df['gcActionApprove'][0] and psRequest == df['gcActionApply'][0]:
         sendTo = psRecord["staff"]["alteremail"] if psRecord["staff"]["alteremail"] is not None else psRecord["staff"]["email"]
@@ -1846,18 +1460,18 @@ def sendEmail(psRecord, psRefNo, psApprovalStatus, psAction, psRequest, finalapp
                 message = "Dear Applicant, " + "\n" + "\n"  + "Approval Status :" + "\n" + Approval_Status  + "\n" + "Leave Period" + "\n" + leavePeriod + sickleavewithcertmsg + "\n" + "*Reminder: The total number of sick leave taken is " + str(sickleave_count) + " consecutive days" + "\n\n" + icsmessage + "\n" + "\n"  + "Thanks," + "\n" + "e-Leave"
             else:
                 message = "Dear Applicant, " + "\n" + "\n"  + "Approval Status :" + "\n" + Approval_Status  + "\n" + "Leave Period" + "\n" + leavePeriod + sickleavewithcertmsg + "\n" + icsmessage + "\n"  + "\n"  + "Thanks," + "\n" + "e-Leave"
-            attached_list = [getApplicationForm(ref_no_hr, psRecord["staff"]["racf"]),
+            attached_list = [getApplicationForm(ref_no, psRecord["staff"]["racf"]),
                              getSummaryForm(leaveContent[0]["year"], psRecord["staff"]["racf"]),
                              geticalFile(sendTo,str(psRecord["staff"]["name"])+" - "+str(typename).title(),str(typename).title() + " Period : " + leavePeriod, start_date, start_time, end_date, end_time, tz)
                             ]
-            filename_list = ["Leave Record for "+ ref_no_hr + " ("+ psRecord["staff"]["racf"] + ")" + ".xlsx",
+            filename_list = ["Leave Record for "+ otherRefNo + " ("+ psRecord["staff"]["racf"] + ")" + ".xlsx",
                              "Leave Summary for " + str((leaveContent[0]["year"])) + " (" + str(psRecord["staff"]["racf"]) + ")" + ".xlsx",
                              "Outlook Calendar.ics"
                             ]
             try:
-                sendGrid(message, title, sendTo, sendCc, attached_list, filename_list)
+                postmarker(message, title, sendTo, sendCc, attached_list, filename_list)
             except:
-                pass
+                localSend(message, title, sendTo, sendCc, attached_list, filename_list)
     # Reject end instantly (Apply)
     if psAction == df['gcActionReject'][0] and (psRequest == df['gcActionApply'][0]):
         sendTo = psRecord["staff"]["alteremail"] if psRecord["staff"]["alteremail"] is not None else psRecord["staff"]["email"]
@@ -1865,9 +1479,9 @@ def sendEmail(psRecord, psRefNo, psApprovalStatus, psAction, psRequest, finalapp
         title = "<E-LEAVE> " + str(psRecord["staff"]["name"]) + " (" + str(psRecord["staff"]["dept"]) + ") " + " - " + "Apply " + str(typename) + " #REJECTED"
         message = "Dear Applicant, " + "\n" + "\n"  + "Approval Status :" + "\n" + Approval_Status + "\n" + "Leave Period" + "\n" + leavePeriod + "\n" + "Thanks," + "\n" + "e-Leave"
         try:
-            sendGrid(message, title, sendTo, sendCc,"","")
+            postmarker(message, title, sendTo, sendCc)
         except:
-            pass 
+            localSend(message, title, sendTo, sendCc)
     # Reject end instantly (Cancel)
     if psAction == df['gcActionReject'][0] and (psRequest == df['gcActionCancel'][0]):
         sendTo = psRecord["staff"]["alteremail"] if psRecord["staff"]["alteremail"] is not None else psRecord["staff"]["email"]
@@ -1875,9 +1489,9 @@ def sendEmail(psRecord, psRefNo, psApprovalStatus, psAction, psRequest, finalapp
         title = "<E-LEAVE> " + str(psRecord["staff"]["name"]) + " (" + str(psRecord["staff"]["dept"]) + ") " + " - " + "Cancel " + str(typename) + " #REJECTED"
         message = "Dear Applicant, " + "\n" + "\n"  + "Cancel Approval Status :" + "\n" + Approval_Status + "\n" + "Leave Period" + "\n" + leavePeriod + "\n" + "Thanks," + "\n" + "e-Leave"
         try:
-            sendGrid(message, title, sendTo, sendCc,"","")
+            postmarker(message, title, sendTo, sendCc, None, None)
         except:
-            pass 
+            localSend(message, title, sendTo, sendCc)
 
     # Approved by approver must send to applicant and next approver , if it is final approver, it will send out the sick leave limit list to HR
     if psAction == df['gcActionApprove'][0] and psRequest == df['gcActionCancel'][0]:
@@ -1886,16 +1500,10 @@ def sendEmail(psRecord, psRefNo, psApprovalStatus, psAction, psRequest, finalapp
             sendCc = cc_general_list + ";" + cc_sl_limit_list
             title = "<E-LEAVE> " + str(psRecord["staff"]["name"]) + " (" + str(psRecord["staff"]["dept"]) + ") " + " - " + "Cancel " + str(typename) + " #APPROVED"
             message = "Dear Applicant, " + "\n" + "\n"  + "Cancel Approval Status :" + "\n" + Approval_Status + "\n" + "Leave Period" + "\n" + leavePeriod + "\n"+ cancelicsmessage + "\n" + "\n" + "Thanks," + "\n" + "e-Leave"
-            #attached_list = [getApplicationForm(ref_no_hr, psRecord["staff"]["racf"]),
-            #                 getSummaryForm(leaveContent[0]["year"], psRecord["staff"]["racf"])
-            #                ]
-            #filename_list = ["Leave Record for "+ ref_no_hr + " ("+ psRecord["staff"]["racf"] + ")" + ".xlsx",
-            #                 "Leave Summary for " + str((leaveContent[0]["year"])) + " (" + str(psRecord["staff"]["racf"]) + ")" + ".xlsx"
-            #                ]
             try:
-                sendGrid(message, title, sendTo, sendCc)
+                postmarker(message, title, sendTo, sendCc, None, None)
             except:
-                pass
+                localSend(message, title, sendTo, sendCc)
     # Send pending leave to next approver (Cancel)
     if (finalapprover > currentapprover) and (psAction == df['gcActionApprove'][0] and psRequest == df['gcActionCancel'][0]):
         sendTo = next_approver
@@ -1903,9 +1511,9 @@ def sendEmail(psRecord, psRefNo, psApprovalStatus, psAction, psRequest, finalapp
         title = "<E-LEAVE> " + str(psRecord["staff"]["name"]) + " (" + str(psRecord["staff"]["dept"]) + ") " + " - " + "Cancel " + str(typename) + " #PENDING"
         message = "Dear People Leader," + "\n" + "\n"  + "Please click the following link to approve:  https://eleave.mmgoverseas.app/#/ApprovalCenter" + "\n" + "\n" + "Leave Period" + "\n" + leavePeriod + "\n" + "Thanks," + "\n" + "e-Leave"
         try:
-            sendGrid(message, title, sendTo, sendCc,"","")
+            postmarker(message, title, sendTo, sendCc, None, None)
         except:
-            pass
+            localSend(message, title, sendTo, sendCc)
     # Send pending leave to next approver (Apply)
     if (finalapprover > currentapprover) and (psAction == df['gcActionApprove'][0] and psRequest == df['gcActionApply'][0]):
         sendTo = next_approver
@@ -1913,199 +1521,762 @@ def sendEmail(psRecord, psRefNo, psApprovalStatus, psAction, psRequest, finalapp
         title = "<E-LEAVE> " + str(psRecord["staff"]["name"]) + " (" + str(psRecord["staff"]["dept"]) + ") " + " - " + "Apply " + str(typename) + " #PENDING"
         message = "Dear People Leader," + "\n" + "\n"  + "Please click the following link to approve:  https://eleave.mmgoverseas.app/#/ApprovalCenter" + "\n" + "\n" + "Leave Period" + "\n" + leavePeriod + "\n" + "Thanks," + "\n" + "e-Leave"
         try:
-            sendGrid(message, title, sendTo, sendCc,"","")
+            postmarker(message, title, sendTo, sendCc, None, None)
         except:
-            pass
+            localSend(message, title, sendTo, sendCc)
 
 
-# function to apply leave
-# parameters:
-# psOffice : Office o f that staff for calculating holidays.
-# psYear : Annual Leave Year
-# psRacf : RACF of the applicant
-# psLeaveType : Leave type applying. either :
-#           "Annual Leave"
-#           "Casual Leave"
-#           "Sick Leave - No Medical Cert."
-#           "Sick Leave - With Medical Cert."
-#           "Work From Home"
-# psLeaveLst : Leave period list, coverted into AM, PM.  format as [{"startDate": "2021-07-20", "startTime": "AM", "endDate": "2021-07-20", "endTime": "PM"}]
-# psLeaveScreenLst : Leave period list, as at screen showing.  format as [{"startDate": "2021-07-20", "startTime": "Full Day, "endDate": "2021-07-21", "endTime": "AM"}]
-# psSuperUser : whether the action is in super use mode.  True / False
-# return:
-# reject = 0 : leave application, pass = true, no error message.  Leave details will insert into database
-# reject = 1 : leave application failed, period overlap found.  pass = false, error message : Leave applied are overlapping each other.
-# reject = 2 : leave application failed, consecutive days not pass for Annual Leave and Casual Leave.  pass = false, error message : Leave applied is over 2 weeks.
-# reject = 3 : leave application failed, consecutive days not pass for Sick Leave with no cert.  pass = false, error message : Medical certificate is required if sick leave application is more than 1 Day.
-# reject = 4 : leave application failed, leave applying > leave balance. pass = false, error message : Not enough days left for the leave.
-# reject = 5 : leave application failed, cannot update database.  pass = false, error message : Fail to update database
+def getPublicHolidays(office, start_date, end_date):
+
+    # Getting list for public holiday including weekend and public holidays stored at MongoDB
+    calendar_d = [ ]
+
+    holiday_d = list(holidays.find({'Office': office}))
+
+    #rcs = start_date # record checking start
+    #rce = end_date # record checking end
+
+    rcs = (start_date - relativedelta(days=365)).strftime('%Y-%m-%d') # record checking start
+    rce = (end_date + relativedelta(days=365)).strftime('%Y-%m-%d') # record checking end    
+
+    check_range =  pd.date_range(rcs, rce).tolist()
+
+    for date in check_range:
+        calendar_d.append({'Date': f"{date.strftime('%m')}/{date.strftime('%d')}/{date.strftime('%Y')}", 'Time': "AM", 'Day of Week': date.strftime('%A')})
+        calendar_d.append({'Date': f"{date.strftime('%m')}/{date.strftime('%d')}/{date.strftime('%Y')}", 'Time': "PM", 'Day of Week': date.strftime('%A')})
+
+    holiday_lst = [ ]
+
+
+    for cal in calendar_d:
+        
+        # Date 
+        date = datetime.strptime(str(cal['Date']), '%m/%d/%Y').strftime('%Y-%m-%d')
+        # Time
+        time = cal['Time']
+        # Day of week
+        dw = datetime.strptime(str(cal['Date']), '%m/%d/%Y').strftime('%A')
+        # Remark
+        remark = next((ph['Remark'] for ph in holiday_d if str(ph['Date']) == str(date) and str(ph['Time']) == time), "")
+
+        if remark == "":
+            if dw == "Saturday" or dw == "Sunday":
+                remark = "Weekend"
+
+        if remark != "":
+            data = {
+                    "Date": date,
+                    "Time": time,
+                    "Remark": remark
+            }
+
+            holiday_lst.append(data)
+        
+
+    return holiday_lst
+
+def getAllApply(start_date, start_time, end_date, end_time, type, office):
+
+    continuous_dates = []
+
+    current_date = start_date
+    current_time = start_time
+
+    holiday_d = getPublicHolidays(office, start_date, end_date)
+    
+    while current_date < end_date or (current_date == end_date and current_time <= end_time):
+
+        date = current_date.strftime('%Y-%m-%d')
+
+        if next((ph['Remark'] for ph in holiday_d if str(ph['Date']) == str(date) and str(ph['Time']) == current_time), "") == "":
+
+            continuous_dates.append({
+                'applied_date': date,
+                'applied_time': current_time,
+                'applied_type': type
+            })
+            
+        if current_time == 'AM':
+            current_time = 'PM'
+        else:
+            current_time = 'AM'
+            current_date += relativedelta(days=1)
+    
+    return continuous_dates
+
+def getAllLeave(racf, year, leavetype, consecutive_search = False, otherRefNo = ""):
+
+    leave_d = list(eleaveDtl.find({'staff.racf': racf}))
+
+    if consecutive_search:
+        # get same type group
+        leave_t = list(leaveTypes.find({'leave_type_id': leavetype}))
+        leave_g = list(leaveTypes.find({'consecutive_days_group': leave_t[0]['consecutive_days_group']}))
+        same_leave = [leave['leave_type_id'] for leave in leave_g]
+    elif type(leavetype) is list:
+        leave_t = list(leaveTypes.find({'leave_type_id': {'$in': leavetype}}))
+        same_leave = [leave['leave_type_id'] for leave in leave_t]
+    else:
+        leave_t = list(leaveTypes.find({}))
+        same_leave = [leave['leave_type_id'] for leave in leave_t]
+
+    history = [ ]
+
+    for staff in leave_d:
+        for leave_record in staff['leave_record']:
+            for details in leave_record['details']:
+                for period in details['period']:
+                    if leave_record['type'] in same_leave and otherRefNo != "":
+                        if leave_record['applicationStatus'] != df['gcStatusReject'][0] and leave_record['applicationStatus'] != df['gcStatusCancel'][0] and leave_record['otherRefNo'] == otherRefNo:
+                            data = {
+                                "applied_date": period['ldate'],
+                                "applied_time": period['ltime'],
+                                "applied_type": leave_record['type']
+                            }
+
+                            history.append(data)
+                    elif leave_record['type'] in same_leave and otherRefNo == "":
+                        if consecutive_search:
+                            if (leave_record['year'] == year or leave_record['year'] == year - 1) and leave_record['applicationStatus'] != df['gcStatusReject'][0] and leave_record['applicationStatus'] != df['gcStatusCancel'][0]:
+                                data = {
+                                    "applied_date": period['ldate'],
+                                    "applied_time": period['ltime'],
+                                    "applied_type": leave_record['type']
+                                }
+
+                                history.append(data)
+                        else:
+                            if (leave_record['year'] == year) and leave_record['applicationStatus'] != df['gcStatusReject'][0] and leave_record['applicationStatus'] != df['gcStatusCancel'][0]:
+                                data = {
+                                    "applied_date": period['ldate'],
+                                    "applied_time": period['ltime'],
+                                    "applied_type": leave_record['type']
+                                }
+
+                                history.append(data)
+                    
+    return history
+
+def checkConsecutive(racf, year, apply_h, type, office):
+
+    leave_h = getAllLeave(racf, year, type, True)
+
+    min_date = min(apply_h, key=lambda x: x['applied_date'])['applied_date']
+    max_date = max(apply_h, key=lambda x: x['applied_date'])['applied_date']
+
+    min_date = datetime.strptime(min_date, '%Y-%m-%d')
+    max_date = datetime.strptime(max_date, '%Y-%m-%d')
+
+    #########################################
+    # Step 1 : Make the date array before start date 30 days, and after end date 30 days
+    #########################################
+    calendar_d = [ ]
+
+    rcs = (min_date - relativedelta(days=30)).strftime('%Y-%m-%d') # record checking start
+    rce = (max_date + relativedelta(days=30)).strftime('%Y-%m-%d') # record checking end
+
+    check_range =  pd.date_range(rcs, rce).tolist()
+
+    # holiday list
+    holiday_h = getPublicHolidays(office, datetime.strptime(rcs, '%Y-%m-%d'), datetime.strptime(rce, '%Y-%m-%d'))
+
+    # Make the range df for (given_date before 60 days) to (given_date after 60 days)
+    for date in check_range:
+        calendar_d.append({'Date': f"{date.strftime('%m')}/{date.strftime('%d')}/{date.strftime('%Y')}", 'Time': "AM", 'Day of Week': date.strftime('%A')})
+        calendar_d.append({'Date': f"{date.strftime('%m')}/{date.strftime('%d')}/{date.strftime('%Y')}", 'Time': "PM", 'Day of Week': date.strftime('%A')})
+
+    cdf = pd.DataFrame(calendar_d)
+
+    #########################################
+    # Step 2 : Add Public Holiday & Weekend & Applied Leave in date array - column : Applied 
+    #          Add Applying Leave in date array  - column : Apply
+    #########################################
+
+    result_d = [ ]
+
+    for cindex, ckrow in cdf.iterrows():
+        # Date
+        check_date = datetime.strptime(str(ckrow['Date']), '%m/%d/%Y').strftime('%Y-%m-%d')
+        # Time
+        check_time = str(ckrow['Time'])
+        # Mon, Tue, Wed, ...
+        check_dow = str(ckrow['Day of Week'])
+
+        # Applied Checking
+        # 1. public holiday first
+        # 2. weekend
+        # 3. applied leave type
+        # 4. Emtpy
+        applied = ""
+        applied = next((ph['Remark'] for ph in holiday_h if str(ph['Date']) == str(check_date) and str(ph['Time']) == check_time), "")
+
+        if applied == "":
+            if check_dow == "Saturday" or check_dow == "Sunday":
+                applied = "Weekend"
+            else:
+                applied = next((his['applied_type'] for his in leave_h if str(his['applied_date']) == str(check_date) and str(his['applied_time']) == check_time), "")
+
+        # Apply
+        apply = next((cur['applied_type'] for cur in apply_h if str(cur['applied_date']) == str(check_date) and str(cur['applied_time']) == check_time), "")
+
+        data = {
+            "Date": check_date,
+            "Time": check_time,
+            "Day of Week": check_dow,
+            "Applied": applied,
+            "Apply": apply
+            }
+        
+        result_d.append(data)
+
+    rdf = pd.DataFrame(result_d)
+
+    #########################################
+    # Step 3 : Count the numbere of consecutive day based on the leave type
+    #########################################
+
+    # Initial Variable for counting
+    checking_list = [ ]
+    count = 0
+    sl_count = 0 # need to return the day count requested by HR for displaying warning email and message in client
+    no_cert_count = 0
+
+    # Get information from leave_groups e.g. maximum applied days for sick leave/ maximum consective days for annual
+    try:
+        max_al_days = list(leaveGroups.find({'groupID': list(leaveTypes.find({'leave_type_id': type}))[0]['leave_group']}))[0]['max_consecutive_days']
+    except:
+        max_al_days = 0
+
+    for i, r in rdf.iterrows():
+
+        # General consective count
+        if r['Applied'] != "" or r['Apply'] != "":
+            count += 0.5
+            checking_list.append(r['Apply'])
+
+
+        # Annual Leave, Causal Leave 
+        if type == "LVE01" or type == "LVE02" or ((list(leaveTypes.find({'leave_type_id': type}))[0]['leave_group']) == 1):
+
+            # Return error if the 14 days consective is applying, not the past applied
+            if count > max_al_days and any(value != '' for value in checking_list):
+                return ({"consecutive": True, "error_message" : "Reminder: Maximum vacation taken at any one time is 2 WEEKS including Public Holidays, Saturdays and Sundays", "result": None,  "Status_code": 506, "no_of_consective": sl_count})
+
+            # Consider consecutive weekends only if a leave has been applied before
+            if r['Day of Week'] == "Saturday" and rdf.iloc[i-1]['Applied'] == "" and rdf.iloc[i-1]['Apply'] == "":
+                count = 0
+            if (r['Day of Week'] == "Saturday" or r['Day of Week'] == "Sunday") and count <= 0.5:
+                count = 0
+            # Consider public holidays only if a leave has been applied before
+            if r['Applied'] != "" and 'LVE' not in r['Applied'] and rdf.iloc[i-1]['Applied'] == "" and rdf.iloc[i-1]['Apply'] == "":
+                count = 0
+            if r['Applied'] != "" and 'LVE' not in r['Applied'] and count <= 0.5:
+                count = 0
+
+        # Sick Leave with medical cert
+        elif type == "LVE04":
+
+            # Always ignore consecutive day for weekends/public holiday
+            if (r['Day of Week'] == "Saturday" or r['Day of Week'] == "Sunday"):
+                count -= 0.5
+            elif r['Applied'] != "" and 'LVE' not in r['Applied']:
+                count -= 0.5
+            
+            # If the consective date included 2 no cert, then error (Might not need it)
+            #if r['Applied'] == "LVE05":
+            #    no_cert_count += 0.5
+            #if no_cert_count > 1:
+            #    return ({"consecutive": True, "error_message" : "Reminder: For any sick leave periods that exceed 2 contiguous days, sick leave certificate is required", "result": None, "Status_code": 506})
+
+            if any(value != '' for value in checking_list) and count > 0:
+                sl_count = count
+        
+        
+        # Sick Leave without medical cert
+        elif type == "LVE05":
+
+            # Always ignore consecutive day for weekends/public holiday
+            if (r['Day of Week'] == "Saturday" or r['Day of Week'] == "Sunday"):
+                count -= 0.5
+            elif r['Applied'] != "" and 'LVE' not in r['Applied']:
+                count -= 0.5
+
+            # No cert cannot more than 1 days for applying
+            if checking_list.count(type) > 2:
+                return ({"consecutive": True, "error_message" : "Reminder: For any sick leave periods that exceed 2 contiguous days, sick leave certificate is required", "result": None, "Status_code": 506, "no_of_consective": sl_count})
+
+            # Return error if the 2 days consective is applying, not the past applied
+            if count > 1 and any(value != '' for value in checking_list):
+                return ({"consecutive": True, "error_message" : "Reminder: For any sick leave periods that exceed 2 contiguous days, sick leave certificate is required", "result": None, "Status_code": 506, "no_of_consective": sl_count})
+
+            # Return sick leave total consective day for display
+            if any(value != '' for value in checking_list) and count > 0:
+                sl_count = checking_list.count(type) * 0.5
+
+        # Break counter if applied & apply both blank
+        if r['Applied'] == "" and r['Apply'] == "":
+            count = 0
+            no_cert_count = 0
+            
+        # reset checking list if the chain is broken
+        if count == 0:
+            checking_list = [ ]
+        
+        # For developing checking
+        #print (f"{r['Date']}/{r['Time']}/{r['Applied']}/{r['Apply']}, count : {count}, no cert count : {sl_count}")
+
+    
+    return ({"consecutive": False, "error_message" : "Passed", "no_of_consective": sl_count})
+
+def getOOOdays(racf, year, apply_h, type, office):
+
+    leave_d = list(eleaveDtl.find({'staff.racf': racf}))
+
+    # get same type group
+    leave_t = list(leaveTypes.find({'leave_type_id': type}))
+    leave_g = list(leaveTypes.find({'calendar_days_group': leave_t[0]['calendar_days_group']}))
+    same_leave = [leave['leave_type_id'] for leave in leave_g]
+
+    # start/ End date
+    if len(apply_h) < 2:
+        start_date =  datetime.strptime(apply_h[0]['applied_date'], '%Y-%m-%d')
+        end_date = datetime.strptime(apply_h[0]['applied_date'], '%Y-%m-%d')
+    else:
+        start_date =  datetime.strptime(apply_h[0]['applied_date'], '%Y-%m-%d')
+        end_date = datetime.strptime(apply_h[-1]['applied_date'], '%Y-%m-%d')
+
+    # Applied
+    leave_h = getAllLeave(racf, year, same_leave, False)
+
+    # public holiday
+    holiday_h = getPublicHolidays(office, start_date, end_date)
+
+    rcs = (start_date - relativedelta(days=365)).strftime('%Y-%m-%d') # record checking start
+    rce = (end_date + relativedelta(days=365)).strftime('%Y-%m-%d') # record checking end
+
+    check_range =  pd.date_range(rcs, rce).tolist()
+    calendar_d = [ ]
+
+    # Make the range df for (given_date before 60 days) to (given_date after 300 days)
+    for date in check_range:
+        calendar_d.append({'Date': f"{date.strftime('%m')}/{date.strftime('%d')}/{date.strftime('%Y')}", 'Time': "AM", 'Day of Week': date.strftime('%A')})
+        calendar_d.append({'Date': f"{date.strftime('%m')}/{date.strftime('%d')}/{date.strftime('%Y')}", 'Time': "PM", 'Day of Week': date.strftime('%A')})
+
+    cdf = pd.DataFrame(calendar_d)
+
+    result_d = [ ]
+
+    for cindex, ckrow in cdf.iterrows():
+        # Date
+        check_date = datetime.strptime(str(ckrow['Date']), '%m/%d/%Y').strftime('%Y-%m-%d')
+        # Time
+        check_time = str(ckrow['Time'])
+        # Mon, Tue, Wed, ...
+        check_dow = str(ckrow['Day of Week'])
+
+        # Applied Checking
+        # 1. public holiday first
+        # 2. weekend
+        # 3. applied leave type
+        # 4. Emtpy
+        applied = ""
+        applied = next((ph['Remark'] for ph in holiday_h if str(ph['Date']) == str(check_date) and str(ph['Time']) == check_time), "")
+
+        if applied == "":
+            applied = next((his['applied_type'] for his in leave_h if str(his['applied_date']) == str(check_date) and str(his['applied_time']) == check_time), "")
+
+        # Apply
+        apply = next((cur['applied_type'] for cur in apply_h if str(cur['applied_date']) == str(check_date) and str(cur['applied_time']) == check_time), "")
+
+        data = {
+            "Date": check_date,
+            "Time": check_time,
+            "Day of Week": check_dow,
+            "Applied": applied,
+            "Apply": apply
+            }
+        
+        result_d.append(data)
+
+    rdf = pd.DataFrame(result_d)
+
+    # checking list
+    checking_list = [ ]
+    count = 0
+    result_ooo = 0
+    for i, r in rdf.iterrows():
+
+        #print (f"Date : {r['Date']}/{r['Time']} , Applied : {r['Applied']}, Applying : {r['Apply']}, count = {count}, result_ooo = {result_ooo}")
+
+        # General consective count
+        if r['Applied'] != "" or r['Apply'] != "":
+            count += 0.5
+            checking_list.append(r['Apply'])
+        # Break counter if applied & apply both blank
+        if r['Applied'] == "" and r['Apply'] == "":
+                count = 0
+        if any(value != '' for value in checking_list) and count > 0:
+            result_ooo = count
+
+        # reset checking list if the chain is broken
+        if count == 0:
+            checking_list = [ ]
+
+    return float(result_ooo)
+
+def getPhInclusiveWorkDays(racf, year, apply_h, type, office):
+
+    leave_d = list(eleaveDtl.find({'staff.racf': racf}))
+
+    # get same type group
+    leave_t = list(leaveTypes.find({'leave_type_id': type}))
+    leave_g = list(leaveTypes.find({'calendar_days_group': leave_t[0]['calendar_days_group']}))
+    same_leave = [leave['leave_type_id'] for leave in leave_g]
+
+    # start/ End date
+    if len(apply_h) < 2:
+        start_date =  datetime.strptime(apply_h[0]['applied_date'], '%Y-%m-%d')
+        end_date = datetime.strptime(apply_h[0]['applied_date'], '%Y-%m-%d')
+    else:
+        start_date =  datetime.strptime(apply_h[0]['applied_date'], '%Y-%m-%d')
+        end_date = datetime.strptime(apply_h[-1]['applied_date'], '%Y-%m-%d')
+
+    # public holiday
+    holiday_h = getPublicHolidays(office, start_date, end_date)
+
+    rcs = (start_date - relativedelta(days=365)).strftime('%Y-%m-%d') # record checking start
+    rce = (end_date + relativedelta(days=365)).strftime('%Y-%m-%d') # record checking end
+
+    check_range =  pd.date_range(rcs, rce).tolist()
+    calendar_d = [ ]
+
+    # Make the range df for (given_date before 60 days) to (given_date after 300 days)
+    for date in check_range:
+        calendar_d.append({'Date': f"{date.strftime('%m')}/{date.strftime('%d')}/{date.strftime('%Y')}", 'Time': "AM", 'Day of Week': date.strftime('%A')})
+        calendar_d.append({'Date': f"{date.strftime('%m')}/{date.strftime('%d')}/{date.strftime('%Y')}", 'Time': "PM", 'Day of Week': date.strftime('%A')})
+
+    cdf = pd.DataFrame(calendar_d)
+
+    result_d = [ ]
+
+    for cindex, ckrow in cdf.iterrows():
+        # Date
+        check_date = datetime.strptime(str(ckrow['Date']), '%m/%d/%Y').strftime('%Y-%m-%d')
+        # Time
+        check_time = str(ckrow['Time'])
+        # Mon, Tue, Wed, ...
+        check_dow = str(ckrow['Day of Week'])
+
+        # Applied Checking
+        # 1. public holiday first
+        # 2. weekend
+        # 3. applied leave type
+        # 4. Emtpy
+        applied = ""
+        applied = next((ph['Remark'] for ph in holiday_h if str(ph['Date']) == str(check_date) and str(ph['Time']) == check_time), "")
+
+        # Apply
+        apply = next((cur['applied_type'] for cur in apply_h if str(cur['applied_date']) == str(check_date) and str(cur['applied_time']) == check_time), "")
+
+        data = {
+            "Date": check_date,
+            "Time": check_time,
+            "Day of Week": check_dow,
+            "Applied": applied,
+            "Apply": apply
+            }
+        
+        result_d.append(data)
+
+    rdf = pd.DataFrame(result_d)
+
+    # checking list
+    checking_list = [ ]
+    count = 0
+    result = 0
+    for i, r in rdf.iterrows():
+
+        #print (f"Date : {r['Date']}/{r['Time']} , Applied : {r['Applied']}, Applying : {r['Apply']}, count = {count}, result = {result}")
+
+        # General consective count
+        if r['Applied'] != "" or r['Apply'] != "":
+            count += 0.5
+            checking_list.append(r['Apply'])
+        # Consider consecutive weekends only if a leave has been applied before
+        if r['Day of Week'] == "Saturday" and rdf.iloc[i-1]['Applied'] == "" and rdf.iloc[i-1]['Apply'] == "":
+            count = 0
+        if (r['Day of Week'] == "Saturday" or r['Day of Week'] == "Sunday") and count <= 0.5:
+            count = 0
+        # Break counter if applied & apply both blank
+        if r['Applied'] == "" and r['Apply'] == "":
+                count = 0
+        if any(value != '' for value in checking_list) and count > 0:
+            result = count
+
+        # reset checking list if the chain is broken
+        if count == 0:
+            checking_list = [ ]
+
+    return float(result)
+
 
 def applyLeave (psInput):
 
-    getLeaveTypes()
-    getLeaveGroups()
-    psYear = psInput.get("year", 0)
-    psRacf = psInput.get("racf", "")
-    psLeaveType = psInput.get("type", "")
-    psLeaveLst = psInput.get("applying", "")
-    psLeaveScreenLst = psInput.get("applyingScreen", "")
-    psUpdateDB = psInput.get("updateDB", True)
-    SharePointID = psInput.get("sharePointId")
-    timeZone = psInput.get("timeZone", "")
-
-    # Get Super User 
-    try:
-        psSuperUser = session["superUser"]
-    except:
-        psSuperUser = False
-    
-    if psSuperUser:
-        psSuperUser = psInput.get("superUser")
-    else:
-        psSuperUser = False
-
-
-
-    if psYear == 0 or len(psRacf) == 0 or len(psLeaveType) == 0 or len(psLeaveLst) == 0 or len(psLeaveScreenLst) == 0:
-        return ({"pass": False, "error_message" : "Incorrect parameters", "result": None, "Status_code": 505})
-    staffRecord = getStaffRecord(psRacf)
-    leaveHistoryLst = getLeaveHistory(psYear, psYear, staffRecord)
-    leaveTypeAttr = (list(filter(lambda r: (r["leave_type_id"].upper() == psLeaveType), leaveTypeLst))[0])
-    if not isinstance(staffRecord, dict):
-        return ({"pass": False, "error_message" : "Staff Record Not Exist", "result": None, "Status_code": 504}) 
-    if len (leaveTypeAttr) == 0:
-        return ({"pass": False, "error_message" : "Leave Type Not Found", "result": None, "Status_code": 503}) 
-    office = staffRecord["staff"]["office"]
-    # applyingSlotLst : list which combine leave application in all rows
-    # applyingSlotLstByRow : list which keep leave application row by row.
-    applyingSlotLst = [ ]
-    applyingSlotLstByRow = [ ]
-    overlap = False
-    # Loop through each applying leave period
-    for rec in psLeaveLst:  
+    # Special handling other leave
+    if psInput['otherLeaveRef'] == "":
+        type = psInput['type']
+        year = psInput['year']
+        otherRefNo = ""
         
-        withinYr = chkPeriod (rec["startDate"], rec["endDate"], psYear)
-        if not withinYr.get('pass'):
-            return({"pass": False, "error_message": withinYr.get('error_message'), "result": None, "Status_code": withinYr.get('Status_code')})
-        tmpApplyingSlotLst = checkOverlap(rec["startDate"], rec["startTime"], rec["endDate"], rec["endTime"],  psYear, office, staffRecord, applyingSlotLst, psLeaveType)
-        # If no overlap, will get the expanded date slot for leave applying, else leaveSlotLst is empty    
-        # put the expanded date slot into applyingSlotLstByRow for saving to DB into separate document.
-        #if len(tmpApplyingSlotLst) > 0:
-        if isinstance(tmpApplyingSlotLst, list):
-            applyingSlotLst = combineTime(applyingSlotLst, tmpApplyingSlotLst)
-            applyingSlotLstByRow.append(tmpApplyingSlotLst)
-        else:
-            overlap = True
-            errormsg = tmpApplyingSlotLst
-            break    
-    if overlap:
-        return ({"pass": False, "error_message" : errormsg, "result": None, "Status_code": 502})
     else:
-        # Leave type = Annual Leave or Casual Leave :
-        # 1. No overlap with
-        #  the period already applied
-        # 2. Consecutive leave days cannot more than the limits (include annual leave, casual leave, public holidays and weekends), unless leave is applied under superuser mode 
-        # 3. Leave applied cannot more than leave entitle + carry forward.
-        #if leaveTypeAttr.get("max_consecutive_days",0) > 0:
-        result = checkConsecutiveDays(psYear, office, staffRecord, applyingSlotLst, leaveTypeAttr) 
-        if not result.get("pass") and not psSuperUser:
-            return (result)
+        # Get otherLeaveRef
+        otherLeaveRef = psInput['otherLeaveRef'].copy()
+        type = otherLeaveRef[0]['leave_type']
+        year =  otherLeaveRef[0]['year']
+        otherRefNo = otherLeaveRef[0]['ref_no']
 
-        if leaveTypeAttr.get("entitlement_field", "") != "":
-            if checkBalance(psYear, leaveTypeAttr, staffRecord, applyingSlotLst) < 0:
-                return ({"pass": False, "error_message" : "Not enough days left for the leave.", "result": None, "Status_code": 501})
-    
-        newRefNo = getNewRefNo(psYear, staffRecord)
-        rowNo = 0
+        del psInput['otherLeaveRef']
 
-        total_sl = 0
-        warning_sl_message = ""
-        rowDtlLst = [ ]
-        for row in applyingSlotLstByRow:
-            #noOfCalendarDay = getCalendarDay(psYear, office, staffRecord, row)
-            noOfCalendarDay = getCalendarDay(psYear, office, staffRecord, row, leaveTypeAttr)
-            noOfWorkDay = getWorkDay (row)
-            timeSlotLst = [ ]
-            for s in row:
-                timeslot = {
-                    "ldate" : date2Str(s["ldate"]),
-                    "ltime": s["ltime"]
-                }
-                timeSlotLst.append(timeslot)
+
+    # Read Input from client input
+    xdf = pd.DataFrame(psInput)
+
+    # Read other general parameter from client input
+    racf = psInput['racf']
+    office = psInput['office']
+    submit = psInput['updateDB']
+    #submit = False
+    timeZone = psInput['timeZone']
+    spid = psInput['sharePointId']
+    super = psInput['superUser']
+
+
+    # warning output
+    warnings = ""
+
+    # List storing
+    allApplying = [ ]
+    allDetails = [ ]
+
+    # Accumulated workdays for other leave
+    acc_workdays = 0
+
+    for index, row in xdf.iterrows():
+
+        # Date
+        start_date = datetime.strptime(row['applying']['startDate'], '%Y-%m-%d')
+        end_date = datetime.strptime(row['applying']['endDate'], '%Y-%m-%d')
+        # Time
+        start_time = row['applying']['startTime']
+        end_time = row['applying']['endTime']
+        # Time on screen
+        start_time_os = row['applyingScreen']['startTime']
+        end_time_os = row['applyingScreen']['endTime']
+
+        # Get current applying (applying date list for skip weekend, public holiday)
+        applying = getAllApply(start_date, start_time, end_date, end_time, type, office)
+        # Get applied leave history
+        applied = getAllLeave(racf, year, type, False)
+        # Get public holiday list
+        holiday = getPublicHolidays(office, start_date, end_date)
+
+        # inital for other leave calculation, if it is not other leave, then return 0
+        inclusive_workdays = 0
+
+        ################################################### Basic checking ###################################################
+
+        # check start date and end date cannot be weekends/ holidays
+        # Start
+        find = next((ph['Remark'] for ph in holiday if str(ph['Date']) == str(start_date.strftime('%Y-%m-%d')) and str(ph['Time']) == str(start_time)), "")
+        if find != "":
+            return ({"pass": False, "error_message" : "Leave applying start in Weekends / Holidays", "result": None, "Status_code": 502})
+        # End
+        find = next((ph['Remark'] for ph in holiday if str(ph['Date']) == str(end_date.strftime('%Y-%m-%d')) and str(ph['Time']) == str(end_time)), "")
+        if find != "":
+            return ({"pass": False, "error_message" : "Leave applying end in Weekends / Holidays", "result": None, "Status_code": 502})
+
+        # Check applying date cannot be overlap
+        # Applied
+        for rec in applying:
+            find = next((hist['applied_type'] for hist in applied if str(hist['applied_date']) == str(rec['applied_date']) and str(hist['applied_time']) == str(rec['applied_time'])), "")
+            if find != "":
+                return ({"pass": False, "error_message" : "Leave applying is overlapping", "result": None, "Status_code": 502})
+        # Applying
+        for rec in applying:
+            find = next((app['applied_type'] for app in allApplying if str(app['applied_date']) == str(rec['applied_date']) and str(app['applied_time']) == str(rec['applied_time'])), "")
+            if find != "":
+                return ({"pass": False, "error_message" : "Leave applying is overlapping", "result": None, "Status_code": 502})
+            
+        # Check approver is active
+        for i in range(1, 4):
+            if getStaffRecord(racf)['staff'][f"approver{i}"] != "":
+                approver = getStaffRecord(racf)['staff'][f"approver{i}"]
+                approver_status = getStaffRecord(approver)['staff']["status"]
+                if approver_status != "ACTIVE":
+                    return ({"pass": False, "error_message" : "Invalid approver status, please contact HR for confirmation", "result": None,  "Status_code": 509})
+
+        ################################################### Regular Leave checking ###################################################
+
+        if list(leaveTypes.find({'leave_type_id': type}))[0]['other_leave'] is False:
+
+
+            # Check within period
+            find = chkPeriod(datetime.strftime(start_date, "%Y-%m-%d"), datetime.strftime(end_date, "%Y-%m-%d"), year)
+            if find['pass'] is False:
+                return ({"pass": False, "error_message" : find['error_message'], "result": None, "Status_code": 502})
+
+            # Get all applying
+            allApplying += applying
+
+            # Check entitlement is enough or not
+            # Annual/ Casual leave
+            if type == "LVE01" or type == "LVE02":
+                entitled = (getYearEntitlement(year, getStaffRecord(racf), type) + getYearCarryForward(year, getStaffRecord(racf), type))
+                allworkday = float(len(getAllLeave(racf, year, [type], False))) * 0.5 + float(len(allApplying)) * 0.5
+
+                if allworkday > entitled:
+                    return ({"pass": False, "error_message" : "Not enough days left for the leave", "result": None,  "Status_code": 501})
+            # Sick leave
+            if type == "LVE04" or type == "LVE05":
+                max_sl_days = list(leaveGroups.find({'groupID': list(leaveTypes.find({'leave_type_id': type}))[0]['leave_group']}))[0]['max_applied_days']
+                allslworkday = float(len(getAllLeave(racf, year, type, True))) * 0.5 + float(len(allApplying)) * 0.5
+                if allslworkday > max_sl_days:
+                    warnings = "Reminder:  Total Full Paid Sick Leave taken has already reached 7 days which is the maximum cap of current leave calendar year (included below leave application)"
+            # No pay leave
+            if type == "LVE06":
+                entitled = (getYearEntitlement(year, getStaffRecord(racf), "LVE01") + getYearCarryForward(year, getStaffRecord(racf), "LVE01"))
+                allworkday = float(len(getAllLeave(racf, year, "LVE01", False))) * 0.5
+                if (entitled - allworkday) > 0:
+                    return ({"pass": False, "error_message" : "Applying no pay leave is not allowed", "result": None,  "Status_code": 510})
+
+            # Check consecutive
+            cons = checkConsecutive(racf, year, allApplying, type, office)
+            if cons['consecutive'] and not super:
+                return ({"pass": False, "error_message" : cons['error_message'], "result": None,  "Status_code": cons['Status_code']})
         
+        ################################################### Other Leave checking ###################################################
+        elif list(leaveTypes.find({'leave_type_id': type}))[0]['other_leave']:
 
-            if (row[0]['type']) not in ["LVE04","LVE05"]:
-                
-                rowDtl = {
-                    "start_date": psLeaveScreenLst[rowNo]["startDate"],
-                    "start_time": psLeaveScreenLst[rowNo]["startTime"],
-                    "end_date": psLeaveScreenLst[rowNo]["endDate"],
-                    "end_time": psLeaveScreenLst[rowNo]["endTime"],
-                    "no_of_workday": noOfWorkDay,
-                    "no_of_calendarday": noOfCalendarDay,             
-                    "period" : timeSlotLst
-                        }
-            elif (row[0]['type']) in ["LVE04","LVE05"]:
-                rowDtl = {
-                    "start_date": psLeaveScreenLst[rowNo]["startDate"],
-                    "start_time": psLeaveScreenLst[rowNo]["startTime"],
-                    "end_date": psLeaveScreenLst[rowNo]["endDate"],
-                    "end_time": psLeaveScreenLst[rowNo]["endTime"],
-                    "no_of_workday": noOfWorkDay,
-                    "no_of_calendarday": noOfCalendarDay,             
-                    "no_of_consective": countConsecutiveDaysByType(psYear, staffRecord["staff"]["office"], leaveHistoryLst, applyingSlotLst, ["LVE04","LVE05"]),
-                    "period" : timeSlotLst
-                        }
-                # check total sick leave should be less than 7, else it will appear warnings
-                total_sl = noOfWorkDay
-                total_sl += countLeave(psYear, str("LVE04"), df['gcStatusApproved'][0], staffRecord) + countLeave(psYear, str("LVE05"), df['gcStatusApproved'][0], staffRecord)
-                total_sl += countLeave(psYear, str("LVE04"), df['gcStatusPending'][0], staffRecord) + countLeave(psYear, str("LVE05"), df['gcStatusPending'][0], staffRecord)
-                if total_sl > 7:
-                    warning_sl_message = "Reminder:  Total Full Paid Sick Leave taken has already reached 7 days which is the maximum cap of current leave calendar year (included below leave application)"
-            rowDtlLst.append(rowDtl)
-            rowNo += 1
-            approvallist = {
-                "approver1": staffRecord['staff']['approver1'],
-                "approval_date1": "",
-                "approver2": staffRecord['staff']['approver2'],
-                "approval_date2": "",                
-                "approver3": staffRecord['staff']['approver3'],
-                "approval_date3": ""
-            }
+            # parameter reading from user input
+            o_start = otherLeaveRef[0]['period_start']
+            o_end = otherLeaveRef[0]['period_end']
 
-        newLeaveRecord = {
-            "ref_no" : newRefNo,
-            "sharePointId" : SharePointID,
-            "year" : psYear,
-            "type" : psLeaveType,
-            "applicationStatus" : df['gcStatusPending'][0],
-            "approvalStatus": df['gcStatusPending1'][0],
-            "submit_date": date2Str(date.today()),
-            "lastUpdate": psRacf,
-            "updateDate": date2Str(date.today()),
-            "timeZone": timeZone,
-            "approval": approvallist,
-            "details": rowDtlLst
-        }
-        id = staffRecord["_id"]
-        leaveRecord = staffRecord["leave_record"]
-        leaveRecord.append(newLeaveRecord)
-        updateRecordLst = [ ]
-        updateRecord = {
-            "field" : "leave_record",
-            "value" : leaveRecord,
-        }
-        updateRecordLst.append(updateRecord)
-        if psUpdateDB:
-            result = updateDB2(id, updateRecordLst)
+            accumulated = otherLeaveRef[0]['accumulated']
+            excluded_holidays = otherLeaveRef[0]['excluded_holidays']
+
+            # Get all applying
+            allApplying += applying
+
+            # Within allowed period
+            for applyingrecord in allApplying:
+                if (o_start <= applyingrecord['applied_date'] <= o_end) is False:
+                    print ("Here")
+                    return ({"pass": False, "error_message" : "Leave applying is not within the allowed period", "result": None, "Status_code": 511})
+
+            # Entitled Days checking
+            entitled = otherLeaveRef[0]['entitled_days']
+            allworkday = float(len(getAllLeave(racf, year, [type], False, otherRefNo))) * 0.5 + float(len(allApplying)) * 0.5
+            if allworkday > entitled:
+                return ({"pass": False, "error_message" : "Not enough days left for the leave", "result": None,  "Status_code": 501})
+
+            # Forced consecutive leave
+            if accumulated is False:
+                if any(item.get('otherRefNo') == otherRefNo for item in getStaffRecord(racf)['leave_record']):
+                    return ({"pass": False, "error_message" : "Not allow to apply multiple times", "result": None,  "Status_code": 512})
+                if applying != allApplying:
+                    return ({"pass": False, "error_message" : "Not allow to apply multiple times", "result": None,  "Status_code": 512})
+
+            # Counting leave include holiday/ weekend
+            if excluded_holidays is False:
+                inclusive_workdays = getPhInclusiveWorkDays(racf, year, applying, type, office)
+                acc_workdays += inclusive_workdays
+
+                # check entitled days
+                if acc_workdays > entitled:
+                    return ({"pass": False, "error_message" : "Not enough days left for the leave", "result": None,  "Status_code": 501})
+
+            # Check consecutive
+            cons = checkConsecutive(racf, year, allApplying, type, office)
+            if cons['consecutive'] and not super:
+                return ({"pass": False, "error_message" : cons['error_message'], "result": None,  "Status_code": cons['Status_code']})
+
+
+        # Get work Days/ out of office Days for display
+        workday = float(len(applying)) * 0.5 if inclusive_workdays == 0 else inclusive_workdays
+        oooday = getOOOdays(racf, year, applying, type, office)
+        no_of_consective = oooday if type != "LVE04" and type != "LVE05" else float(cons['no_of_consective'])
+
+        # Convert update list for MongoDB update
+        if submit:
+            # Approver List
+            approvers = {}
+            for i in range(1, 4):
+                approvers[f"approver{i}"] = getStaffRecord(racf)['staff'][f"approver{i}"]
+                approvers[f"approval_date{i}"] = ""
+
+            periods = [ ]
+            for rec in applying:
+                period = {
+                        'ldate': rec['applied_date'],
+                        'ltime': rec['applied_time'],
+                        }
+                periods.append(period)
+        
+            detail = {
+                        'start_date': datetime.strftime(start_date, "%Y-%m-%d"),
+                        'start_time': start_time_os,
+                        'end_date': datetime.strftime(end_date, "%Y-%m-%d"),
+                        'end_time': end_time_os,
+                        'no_of_workday': workday,
+                        'no_of_calendarday': oooday,
+                        'no_of_consective': no_of_consective,
+                        'period': periods
+                        }
+            allDetails.append(detail)
+
+    # Submit to update
+    if allDetails != [ ]:
+
+        ref_no = getNewRefNo(year, racf)
+
+        # Update List
+        updateLst = [{
+                    'ref_no': ref_no,
+                    'sharePointId': spid,
+                    'otherRefNo': otherRefNo,
+                    'year': year,
+                    'type': type,
+                    'applicationStatus': df['gcStatusPending'][0],
+                    'approvalStatus': df['gcStatusPending1'][0], 
+                    'submit_date': datetime.strftime(date.today(), "%Y-%m-%d"), 
+                    'lastUpdate': racf, 
+                    'updateDate': datetime.strftime(date.today(), "%Y-%m-%d"), 
+                    'timeZone': timeZone,
+                    'approval': approvers,
+                    'details': allDetails
+                    }]
+        
+        # History List
+        id = getStaffRecord(racf)["_id"]
+        if len(getStaffRecord(racf)["leave_record"]) != 0:
+            updateRecord = [{"field" : "leave_record", "value" : getStaffRecord(racf)["leave_record"] + updateLst}]
         else:
-            return ({"pass": True, "error_message" : "VALIDATION MODE.  Data pass validation.  Database NOT updated !", "result": [{"workday": noOfWorkDay, "calendarDay": noOfCalendarDay}], "Status_code": 200, "Warnings": warning_sl_message})
-        if result.get("pass") and psUpdateDB:
-            sendEmail(staffRecord, newRefNo, df['gcStatusPending1'][0], df['gcActionApply'][0], df['gcActionApply'][0], 1, 1)
+            updateRecord = [{"field" : "leave_record", "value" : updateLst}]
+        
+        update = updateDB2(id, updateRecord)
 
-        return (result)                
-    
+        if update['pass']:
+            sendEmail(getStaffRecord(racf), ref_no, otherRefNo, df['gcActionApply'][0], df['gcActionApply'][0], 1, 1)
+            
+        return update
+
+    # All pass not submission
+    return ({"pass": True, "error_message" : "VALIDATION MODE.  Data pass validation.  Database NOT updated !", "result": [{"workday": workday, "calendarDay": oooday}], "Status_code": 200, "Warnings": warnings})
+
+
+
 def listLeave (psInput):
+
     getLeaveTypes()
     psRacf = psInput.get("racf", "")
     psYear = psInput.get("year", 0)
@@ -2137,7 +2308,7 @@ def listLeave (psInput):
         if (currRefNo == lve["ref_no"] and currStartDate != lve["startDate"] and currStartTime != lve["startTime"]) or (currRefNo != lve["ref_no"]):
             displayLeaveRecord = {
                     "submitDate":  getMMDDYYYY(lve["submitDate"]),
-                    "refNo": getDisplayRefNo(lve["ref_no"], lve["office"], lve["racf"]),
+                    "refNo": getDisplayRefNo(lve["ref_no"], lve["office"], lve["racf"]) if lve["other_leave"] is False else lve["ref_no"],
                     "office": lve["office"],
                     "staffname": lve["staffname"],
                     "empID": lve["empID"],
@@ -2146,7 +2317,7 @@ def listLeave (psInput):
                     "type_id": lve["type"],
                     "sharePointId": lve["sharePointId"],
                     "type" : list(filter(lambda r: (r["leave_type_id"].upper() == lve["type"]), leaveTypeLst))[0].get("leave_type"),
-                    "year": getDisplayLeaveYear(lve["year"]),
+                    "year": getDisplayLeaveYear(lve["year"]) if lve["other_leave"] is False else "",
                     "leaveFrom": getMMDDYYYY(lve["startDate"]),
                     "startPeriod": lve["startTime"],
                     "leaveTo": getMMDDYYYY(lve["endDate"]),
@@ -2242,14 +2413,24 @@ def listApprove(psInput):
                 applicationList = list(filter(lambda r: r["approvalStatus"] == "APPROVED" and r["year"] == record["year"] and r["type"] == record["type"], rec["leave_record"]))
                 numberOfTaken = sum(detail.get('no_of_workday', 0) for leave_application in applicationList for detail in leave_application.get('details', []))
                 try:
-                    balance = (getYearEntitlement(record["year"], getStaffRecord(racf), record["type"]) + getYearCarryForward(record["year"], getStaffRecord(racf))) - numberOfTaken
+                    if record["type"] == "LVE01":
+                        balance = (getYearEntitlement(record["year"], getStaffRecord(racf), record["type"]) + getYearCarryForward(record["year"], getStaffRecord(racf), record["type"])) - numberOfTaken
+                    else:
+                        balance = (getYearEntitlement(record["year"], getStaffRecord(racf), record["type"])) - numberOfTaken
                 except:
                     balance = "Nil"
+
+                # Get Other ref number if it exists:
+                try:
+                    otherRefNo = record["otherRefNo"]
+                except:
+                    otherRefNo = ""
 
                 leaveRecord = {
                     "staff": staff,
                     "racf": racf,
                     "ref_no": getDisplayRefNo(record["ref_no"], office, racf),
+                    "otherRefNo": otherRefNo,
                     "sharePointId": record["sharePointId"],
                     "type_id": record["type"],
                     "type": list(filter(lambda r: (r["leave_type_id"].upper() == record["type"]), leaveTypeLst))[0].get("leave_type"),
@@ -2265,6 +2446,7 @@ def listApprove(psInput):
     return ({"pass": True, "error_message" : None, "result": approvalRecordLst, "Status_code": 200}) 
 
 def changeStatus(psInput):
+
     psRefNo = psInput.get("refNo", 0)
     psRacf = psInput.get("racf", "")
     psAction = psInput.get("action","")
@@ -2279,9 +2461,12 @@ def changeStatus(psInput):
 
     if psRefNo == 0 or len(psRacf) == 0 or len(psAction) == 0:
         return ({"pass": False, "error_message" : "Incorrect parameters", "result": None, "Status_code": 505})        
+    
     refNo = getActualRefNo(psRefNo)
+    # applicantRacf = "NF" + psRefNo[-4:]
     applicantRacf = "NF1" + psRefNo[-3:]
     staffRecord = getStaffRecord(applicantRacf)
+
     if not isinstance(staffRecord, dict):
         return ({"pass": False, "error_message" : "Staff Record Not Exist", "result": None, "Status_code": 504}) 
 
@@ -2291,11 +2476,15 @@ def changeStatus(psInput):
     if len(staffRecord["staff"]["approver3"]) != 0: max_approver = 3
 
     leaveRecord = [(idx, record) for idx, record in enumerate(staffRecord["leave_record"]) if record["ref_no"] == refNo]
+
     currApplicationStatus = (leaveRecord[0][1]["applicationStatus"])
     currApprovalStatus = (leaveRecord[0][1]["approvalStatus"])
 
     ## Get work days
     no_of_workdays = (leaveRecord[0][1]["details"][0]["no_of_workday"])
+
+    ## Get other ref no
+    otherRefNo = leaveRecord[0][1]["otherRefNo"]
 
     index = leaveRecord[0][0]
     newApplicationStatus = currApplicationStatus
@@ -2305,7 +2494,7 @@ def changeStatus(psInput):
     # Action - Cancel
     if psAction == df['gcActionCancel'][0]:
         if psRacf != applicantRacf and not psSuperUser:
-            return ({"pass": False, "error_message" : "Only applicant himself / herself can cancel leave.", "result": None, "Status_code": 604})
+           return ({"pass": False, "error_message" : "Only applicant himself / herself can cancel leave.", "result": None, "Status_code": 604})
         if currApprovalStatus == df['gcStatusPendingCancel1'][0] or currApprovalStatus == df['gcStatusPendingCancel2'][0] or currApprovalStatus == df['gcStatusPendingCancel3'][0]:
             return ({"pass": False, "error_message" : "Leave cancel already submitted and waiting for approval.", "result": None, "Status_code": 605})
         firstLeaveDate = str2Date ("9999-12-31")
@@ -2511,7 +2700,7 @@ def changeStatus(psInput):
     
     if result.get("pass") and approval_result.get("pass"):
         staffRecord = getStaffRecord(applicantRacf)
-        sendEmail (staffRecord, refNo, newApprovalStatus, psAction, emailRequest, max_approver, approval_index)
+        sendEmail (staffRecord, refNo, otherRefNo, psAction, emailRequest, max_approver, approval_index)
     return (result)  
 
  
@@ -2585,6 +2774,7 @@ def listApprovedLeaveByYear(psInput):
                         "staff": staff,
                         "racf": racf,
                         "ref_no": getDisplayRefNo(record["ref_no"], office, racf),
+                        "otherRefNo": record["otherRefNo"] if record["otherRefNo"] != "" else "",
                         "type_id": record["type"],
                         "type": list(filter(lambda r: (r["leave_type_id"].upper() == record["type"]), leaveTypeLst))[0].get("leave_type"),
                         "approvalStatus": df['gcStatusApproved'][0],
@@ -2618,8 +2808,6 @@ def apiPrintSummary():
  
     para = json.loads(request.headers['parameters'])                        
     psInput =  {'year': para['year'], 'racf': para['racf']}    
-
-    print (psInput)
 
     result = listLeave(psInput)
  
@@ -2687,7 +2875,7 @@ def apiPrintSummary():
                 return jsonify({"error_message" : "Sorry, we failed to generate Leave Summary.  Perhaps no data for the year"}), 501   
     
             report = {
-                "hdrCalendarYear": record["details"][0].get("year"),
+                "hdrCalendarYear": getDisplayLeaveYear(psInput["year"]),
                 "hdrUser": record["details"][0].get("staffname") + "\nLeave Application Summary",
                 "hdrALTaken": alTaken,
                 "hdrALPending": alPending,
@@ -2775,11 +2963,12 @@ def apiPrintApply():
         
 
             # Summarize the number of balance
+            print (displayLeaveHistoryHdr)
             if rec['type'] == 'LVE01':
                 DaysOfApproved = displayLeaveHistoryHdr[0]['taken']
                 DaysOfPending = displayLeaveHistoryHdr[0]['pending']
                 DaysOfleft = displayLeaveHistoryHdr[0]['balance']
-                DaysOfCarryForward = getYearCarryForward(rec['year'], StaffRecord)
+                DaysOfCarryForward = getYearCarryForward(rec['year'], StaffRecord, rec['type'])
                 DaysOfEntitlement = str(DaysOfCarryForward) + " (" + str(int(rec['year']-1)) + ") " + "+ " + str(getYearEntitlement(rec['year'], StaffRecord, rec['type'])) + " (" + str(int(rec['year'])) + ") "
             elif rec['type'] == 'LVE02':
                 DaysOfApproved = displayLeaveHistoryHdr[1]['taken']
@@ -2800,6 +2989,11 @@ def apiPrintApply():
                 DaysOfCarryForward = 0
                 DaysOfEntitlement = "N/A"
             elif rec['type'] == 'LVE05':
+                DaysOfApproved = displayLeaveHistoryHdr[2]['taken']
+                DaysOfPending = displayLeaveHistoryHdr[2]['pending']
+                DaysOfleft = "N/A"
+                DaysOfEntitlement = "N/A"
+            else:
                 DaysOfApproved = displayLeaveHistoryHdr[2]['taken']
                 DaysOfPending = displayLeaveHistoryHdr[2]['pending']
                 DaysOfleft = "N/A"
@@ -2843,7 +3037,7 @@ def apiPrintApply():
                 "position": StaffRecord['staff']['position'],
                 "dept": StaffRecord['staff']['dept'],
                 "date_joined": StaffRecord['staff']['date_join'],
-                "ref_no": ref,
+                "ref_no": ref if rec['otherRefNo'] == "" else rec['otherRefNo'],
                 "sharePointid": DissharePointid,
                 "approver1": get_approver1,
                 "approver_pos1": get_pos_approver1,
@@ -2966,12 +3160,12 @@ def listPartnersLeave(psInput):
                             pass
                 partnersLeaveList = sorted(partnersLeaveList, key=lambda d: (d["approvalStatus"], d["staff"], d["racf"], d["ref_no"])) 
         partnersLeave.append(partnersLeaveList)
-            
+    
+
     # Re-structure
     final_result = [ ]
     for index, rec in enumerate(partnersLeave[0]):
         final_result.append(rec)
-
 
     ### start preparing frontend presentation 
 
@@ -3239,3 +3433,1111 @@ def apiChangeLeaveRecordDate(psInput):
             except:
                 return ({"pass": False, "error_message" : "Error on approval date 3", "result": [], "status_code": 505}) 
     return ({"pass": True, "error_message" : None, "result": [], "status_code": 200}) 
+
+
+def submitRequest(psInput):
+
+    # Validation
+
+
+    # duplicated approval#
+    history_h = list(otherLeaves.find({"ref_no": psInput['ref_no']}))
+    if len(history_h) > 0:
+        return ({"pass": False, "error_message" : "Error on duplicated approval #", "result": [], "status_code": 901}) 
+    
+    if psInput['office'] == "":
+        return ({"pass": False, "error_message" : "Office must be selected", "result": [], "status_code": 902}) 
+    
+    if psInput['racf'] == "":
+        return ({"pass": False, "error_message" : "RACF cannot be blank", "result": [], "status_code": 903}) 
+
+    if psInput['leave_type'] == "":
+        return ({"pass": False, "error_message" : "Leave Type must be selected", "result": [], "status_code": 904}) 
+    
+    if float(psInput['entitled_days']) > 0 and psInput['entitled_days'] == "":
+        return ({"pass": False, "error_message" : "Entitled Days cannot be 0 or blank", "result": [], "status_code": 905}) 
+    
+    # Optional
+    #if psInput['ref_date'] == "":
+    #    return ({"pass": False, "error_message" : "Reference Date cannot be blank", "result": [], "status_code": 906}) 
+    
+    if psInput['period_start'] == "":
+        return ({"pass": False, "error_message" : "Period Start cannot be blank", "result": [], "status_code": 907}) 
+    
+    if psInput['period_end'] == "":
+        return ({"pass": False, "error_message" : "Period End cannot be blank", "result": [], "status_code": 908}) 
+    
+    # Entitled day should less than the days between start and end
+    duration = (datetime.strptime(psInput['period_end'], "%Y-%m-%d") - datetime.strptime(psInput['period_start'], "%Y-%m-%d")) + timedelta(days=1)
+
+    if duration < timedelta(days=float(psInput['entitled_days'])):
+        return ({"pass": False, "error_message" : "Entitled days should be less than the duration of period start and end", "result": [], "status_code": 912}) 
+    
+    if psInput['accumulated'] == "":
+        return ({"pass": False, "error_message" : "Contiguous option must be selected", "result": [], "status_code": 909}) 
+    
+    if psInput['excluded_holidays'] == "":
+        return ({"pass": False, "error_message" : "Holiday/Weekend option must be selected", "result": [], "status_code": 910}) 
+
+    # End date is eariler than period start
+    if psInput['period_start'] > psInput['period_end']:
+        return ({"pass": False, "error_message" : "Your end date of application is earlier than your start date input!", "result": [], "status_code": 911}) 
+    
+    # Match staff office
+    if getStaffRecord(psInput['racf'])['staff']['office'] != psInput['office']:
+        return ({"pass": False, "error_message" : "Office code does not match with staff records", "result": [], "status_code": 912}) 
+    
+
+    # Create a document to be inserted
+    request = {
+        'office': psInput['office'],
+        'year': psInput['year'],
+        'racf': psInput['racf'],
+        'ref_no': psInput['ref_no'],
+        'leave_type': psInput['leave_type'],
+        'entitled_days': float(psInput['entitled_days']),
+        'ref_date': psInput['ref_date'],
+        'period_start': psInput['period_start'],
+        'period_end': psInput['period_end'],
+        'accumulated': eval(psInput['accumulated']),
+        'excluded_holidays': eval(psInput['excluded_holidays']),
+        'status': "active"
+    }
+
+    # Insert the document into the collection
+    otherLeaves.insert_one(request)
+
+    # Email Session
+    staff_fullname = getStaffRecord(psInput['racf'])['staff']['name']
+    staff_dept = getStaffRecord(psInput['racf'])['staff']['dept']
+    leave_name = str(list(leaveTypes.find({'leave_type_id': psInput['leave_type']}))[0]['leave_type']).title()
+    reference_no_inEmail = str(psInput['ref_no'])[0:2] + "/" + str(psInput['ref_no'])[2:6] + "/" + str(psInput['ref_no'])[6:]
+
+
+    title = f"<E-LEAVE> {staff_fullname} ({staff_dept}) - Requisition for {leave_name} #APPROVED"
+    message = (
+        f"Dear Applicant, \n\n"
+        f"Your requisition for {leave_name} is approved and details are as below.\n\n"
+        f"REFERENCE NO.: {reference_no_inEmail}\n"
+        f"REQUISITION DATE: {psInput['ref_date']}\n"
+        f"ENTITLED DAYS: {float(psInput['entitled_days'])} DAY(S)\n"
+        f"ALLOWED PERIOD: {psInput['period_start']} - {psInput['period_end']}\n\n"
+        f"When submitting your application, please choose the 'Others' Leave Type and Reference # indicated above from the system. "
+        f"The remaining procedures will be the same as those for the prior leave request.\n\n"
+        f"Should you have any queries, please contact local HR.\n\n"
+        f"Thanks,\n"
+        f"e-Leave"
+    )
+
+    sendTo = getStaffRecord(psInput['racf'])['staff']['email']
+    sendCc = "billy.chan@macys.com"
+
+    try:
+        postmarker(message, title, sendTo, sendCc, None, None)
+    except:
+        # If you're writing this to a file or sending it over a network, ensure you encode it properly
+        message = message.encode('utf-8')
+        localSend(message, title, sendTo, sendCc)
+
+
+    return ({"pass": True, "error_message" : None, "result": [], "status_code": 200}) 
+
+
+
+def cancelRequest(psInput):
+
+    ref_no = psInput['ref_no']
+    racf = psInput['racf']
+    year = list(otherLeaves.find({"ref_no": psInput['ref_no']}))[0]['year']
+    type = list(otherLeaves.find({"ref_no": psInput['ref_no']}))[0]['leave_type']
+
+    # Validation
+    workday = float(len(getAllLeave(racf, year, [type], False, ref_no))) * 0.5
+
+    if workday > 0:
+        return ({"pass": False, "error_message" : "Reference has not been completely canceled.", "result": [], "status_code": 810}) 
+    
+    # pass validation
+    update = otherLeaves.update_one({"ref_no": ref_no}, {"$set": {"status": "canceled"}})
+
+    if update.matched_count > 0:
+        return ({"pass": True, "error_message" : None, "result": [], "status_code": 200}) 
+    else:
+        return ({"pass": False, "error_message" : "Cancel failed, please check the Approval #", "result": [], "status_code": 810}) 
+    
+
+
+def getRefDetails(ref_no):
+
+    result = [ ]
+    
+    record = list(otherLeaves.find({"ref_no": ref_no}))
+
+    for rec in record:
+        result.append({'ref_no': rec['ref_no'],
+                       'office': rec['office'],
+                       'year': rec['year'],
+                       'racf': rec['racf'],
+                       'leave_type': rec['leave_type'],
+                       'leave_name': str(list(leaveTypes.find({'leave_type_id': rec['leave_type']}))[0]['leave_type']).title(),
+                       'entitled_days': float(rec['entitled_days']),
+                       'ref_date': rec['ref_date'],
+                       'period_start': rec['period_start'],
+                       'period_end': rec['period_end'],
+                       'accumulated': rec['accumulated'],
+                       'excluded_holidays': rec['excluded_holidays']
+                      })
+
+    return result
+
+def checkOtherLeave(psInput):
+
+    return ({"pass": True, "error_message" : "VALIDATION MODE.  Data pass validation.  Database NOT updated !", "result": [], "Status_code": 200})
+
+@eleave.route("/api/getoffice")
+@checkLogged.check_logged
+def apiGetOffice():
+    result = getAllOffice()
+    return jsonify(result) 
+    
+@eleave.route("/api/getSpecialLeave")
+@checkLogged.check_logged
+def apiGetSpecialLeave():
+
+    result = getAllSpecialLeave()
+    return jsonify(result) 
+
+
+@eleave.route("/api/getAllSpecialRef", methods=['POST'])
+@checkLogged.check_logged
+def apiGetAllSpecialRef():
+    psInput = request.get_json()
+
+    racf = psInput['racf']
+    super = psInput['super_mode']
+    try:
+        time = datetime.strptime(psInput['localTime'], '%a %b %d %Y')
+    except:
+        time = datetime.strptime(psInput['localTime'], '%a %b %d %Y %H:%M:%S')
+
+    result = getAllSpecialRef(racf, super, time)
+    return jsonify(result) 
+
+
+@eleave.route("/api/getRefDetails", methods=['POST'])
+@checkLogged.check_logged
+def apiGetRefDeatils():
+    psInput = request.get_json()
+    ref_no = psInput['ref_no']
+
+    result = getRefDetails(ref_no)
+
+    return jsonify(result) 
+
+@eleave.route("/api/specialLeaveRefNo", methods=['POST'])
+@checkLogged.check_logged
+def apiSpecialLeaveRefNo():
+    psInput = request.get_json()
+    # Get Office code
+    ofc = psInput['Office']
+    year = psInput['Year']
+
+    if ofc != '' and year != '':
+        result = specialLeaveRefNo(ofc, year)
+    else:
+        result = ""
+    try: 
+        return str(result) # APP
+    except:
+        return str(result) # postman
+
+@eleave.route("/api/submitRequest", methods=['POST'])
+@checkLogged.check_logged
+def apiSubmitRequest():    
+    psInput = request.get_json()
+    result = submitRequest(psInput)
+    try: 
+        return jsonify(result), result['status_code'] # APP
+    except:
+        return jsonify(result) # postman
+
+@eleave.route("/api/cancelRequest", methods=['POST'])
+@checkLogged.check_logged
+def apiCancelRequest():    
+    psInput = request.get_json()
+    result = cancelRequest(psInput)
+    try: 
+        return jsonify(result), result['status_code'] # APP
+    except:
+        return jsonify(result) # postman
+
+
+
+#########################################################################################################################
+# To be deleted
+#########################################################################################################################
+
+
+# def Mailer_to_Go(message, title, sendTo, sendCC, attachment = "", attachmentname = ""):
+
+#     # sender
+#     try: #Heroku
+#         sender_user = 'noreply'
+#         sender_email = "@".join([sender_user, current_app.mailertogo_domain])
+#         sender_name = 'noreply@mmgoverseas.app'
+#     except: #Local
+#         sender_email = 'noreply' + "@" + os.environ["MAILERTOGO_DOMAIN"]
+
+#     # recipient
+#     # By Vincent Cheng temp on 11/23/22
+#     #recipient_email = "ken.yip@macys.com;vincent.cheng@macys.com"
+#     #recipient_email = "brown.michael.v@gmail.com"
+#     #recipient_email = "ken.yip@macysinc.onmicrosoft.com;vincent.cheng@macysinc.onmicrosoft.com"    
+
+#     #Get recipient domain name
+#     try: #Heroku
+#         recipient_domain = current_app.recipient_domain
+#         local_recipient_domain = current_app.macys_domain
+#         recipient_email = sendTo.replace(local_recipient_domain, recipient_domain)
+#     except: #Local
+#         recipient_domain = current_app.config['recipient_domain']
+#         recipient_email = sendTo
+
+#     #Get recipient cc domain name
+#     try: #Heroku
+#         recipient_domain = current_app.recipient_domain
+#         local_recipient_domain = current_app.macys_domain
+#         recipient_cc_email = sendCC.replace(local_recipient_domain, recipient_domain)
+#     except: #Local
+#         recipient_domain = current_app.config['recipient_domain']
+#         recipient_cc_email = sendCC
+
+#     # subject
+#     subject = title
+
+#     # text body
+#     body_plain = message
+
+#     # html body
+#     line_break = '\n' #used to replace line breaks with html breaks
+#     body_html = f'''<html>
+#         <head></head>
+#         <body>
+#         {'<br/>'.join(body_plain.split(line_break))}
+#         </body>
+#         </html>'''
+
+#     # create message container
+#     message = MIMEMultipart('alternative')
+#     message['Subject'] = subject
+#     message['From'] = sender_email
+#     message['To'] = recipient_email
+#     message['Cc'] = recipient_cc_email
+
+#     print (message['From'])
+#     print (message['To'])
+#     print (message['Cc'])
+
+#     # prepare plain and html message parts
+#     part1 = MIMEText(body_plain, 'plain')
+#     part2 = MIMEText(body_html, 'html')
+
+#     # attach parts to message
+
+#     message.attach(part1)
+#     message.attach(part2)
+
+#     # transform recipient to list
+#     recipient_email = list(recipient_email.split(";"))
+#     recipient_cc_email = list(recipient_cc_email.split(";"))
+
+#     # Attachment Part
+#     if len(attachment) > 0:
+#         for index, bytesIOfile in enumerate(attachment):
+#             try:
+#                 part3 = MIMEApplication(bytesIOfile.getvalue())
+#                 application_type = mimetypes.guess_type("a.xlsx")[0] or 'application/octet-stream' + " ;charset=UTF-8"
+#                 part3.add_header('Content-Disposition', 'attachment', filename=attachmentname[index])
+#                 part3.add_header('Content-Type', application_type)
+#                 message.attach(part3)
+#             except:
+#                 pass
+#     else:
+#         pass
+
+#     try:
+#         host = current_app.mailertogo_host
+#         port = current_app.mailertogo_port
+#     except:
+#         host = os.environ["MAILERTOGO_SMTP_HOST"]
+#         port = os.environ["MAILERTOGO_SMTP_PORT"]
+#         sc = checkSSL(host, int(port))
+#         if sc == 404:
+#             print ("Error Code 404, SMTP connection timeout.")
+#             quit()
+#     else:
+#         pass
+
+#     # send the message.
+#     try:
+#         server = smtplib.SMTP(host, port)
+#         server.ehlo()
+#         server.starttls()
+#         server.ehlo()
+#         server.login(current_app.mailertogo_user, current_app.mailertogo_password)
+#         server.sendmail(sender_email, (recipient_email + recipient_cc_email), message.as_string())
+#         server.close()
+#     except Exception as e:
+#         server = smtplib.SMTP(host, port)
+#         server.ehlo()
+#         server.sendmail(sender_email, (recipient_email + recipient_cc_email), message.as_string())
+#         server.close()
+#         print ("Local SMTP Email Sent!")
+#     else:
+#         print ("Email sent!")
+
+# def sendGrid(message, title, sendTo, sendCC, attachment=None, attachmentname=None):
+
+#     # Create the SendGrid message
+
+#     # line break
+#     html_message = '<br>'.join(message.split('\n'))
+#     sg_message = Mail(
+#         from_email='noreply@mmgoverseas.app',
+#         to_emails=sendTo,
+#         subject=title,
+#         html_content=html_message
+#     )        
+
+#     # prevent empty cc list program error
+#     if sendCC:
+#         sendCC_list = list(sendCC.split(";"))
+#         sendCC_list = list(set([value for value in sendCC_list if len(value) >= 8]))
+#         cc_mail = [] 
+
+
+#         for email in sendCC_list:
+#             cc_mail.append(Cc(email, email)) 
+
+#         n = len(sendCC_list)
+
+#         cc_mail_first_n = cc_mail[:n]
+
+        
+#         sg_message.add_cc (cc_mail_first_n)
+
+#     # BCc
+#     sg_message.add_bcc(os.environ.get('Send_BCc'))
+        
+#     # Add attachments if specified
+#     if attachment and attachmentname:
+#         for index, file in enumerate(attachment):
+
+#             encoded_file = base64.b64encode(file.getvalue()).decode()
+
+#             attached_file = Attachment(
+#                 FileContent(encoded_file),
+#                 FileName(attachmentname[index]),
+#                 FileType('application/octet-stream'),
+#                 Disposition('attachment')
+#             )
+#             sg_message.attachment = attached_file
+
+#     try:
+#         # Send the message using the SendGrid API
+#         sg = SendGridAPIClient(os.environ.get('SENDGRID_API_KEY'))
+#         response = sg.send(sg_message)
+#         print(response.status_code)
+#     except Exception as e:
+#         print(e.message)
+
+
+# def checkSSL(host,port,timeout=1):
+#     sock = socket.socket(socket.AF_INET,socket.SOCK_STREAM) #presumably 
+#     sock.settimeout(timeout)
+#     try:
+#        sock.connect((host,port))
+#     except:
+#        return 404
+#     else:
+#        sock.close()
+#        return 250
+
+
+# Combine 2 time slot list and then sort by date and time.
+# parameters:
+# psLst1 : in the format : [{"ldate": datetime, "ltime": "AM" / "PM"}]
+# psLst2 : in the format : [{"ldate": datetime, "ltime": "AM" / "PM"}]
+# return : combined list in the format [{"ldate": datetime, "ltime": "AM" / "PM"}]
+# def combineTime(psLst1, psLst2):
+#     combinedLst = []
+
+#     for s in psLst1:
+#         slot = {
+#             "ldate" : s["ldate"],
+#             "ltime" : s["ltime"],
+#             "type" : s["type"]
+#         }
+#         combinedLst.append(slot)
+    
+#     for s in psLst2:
+#         slot = {
+#             "ldate" : s["ldate"],
+#             "ltime" : s["ltime"],
+#             "type": s["type"]
+#             }
+#         combinedLst.append(slot)
+
+#     combinedLst = sorted(combinedLst, key=lambda d: (d['ldate'], d["ltime"]))
+#     return (combinedLst)
+
+
+
+# function to apply leave
+# parameters:
+# psOffice : Office o f that staff for calculating holidays.
+# psYear : Annual Leave Year
+# psRacf : RACF of the applicant
+# psLeaveType : Leave type applying. either :
+#           "Annual Leave"
+#           "Casual Leave"
+#           "Sick Leave - No Medical Cert."
+#           "Sick Leave - With Medical Cert."
+#           "Work From Home"
+# psLeaveLst : Leave period list, coverted into AM, PM.  format as [{"startDate": "2021-07-20", "startTime": "AM", "endDate": "2021-07-20", "endTime": "PM"}]
+# psLeaveScreenLst : Leave period list, as at screen showing.  format as [{"startDate": "2021-07-20", "startTime": "Full Day, "endDate": "2021-07-21", "endTime": "AM"}]
+# psSuperUser : whether the action is in super use mode.  True / False
+# return:
+# reject = 0 : leave application, pass = true, no error message.  Leave details will insert into database
+# reject = 1 : leave application failed, period overlap found.  pass = false, error message : Leave applied are overlapping each other.
+# reject = 2 : leave application failed, consecutive days not pass for Annual Leave and Casual Leave.  pass = false, error message : Leave applied is over 2 weeks.
+# reject = 3 : leave application failed, consecutive days not pass for Sick Leave with no cert.  pass = false, error message : Medical certificate is required if sick leave application is more than 1 Day.
+# reject = 4 : leave application failed, leave applying > leave balance. pass = false, error message : Not enough days left for the leave.
+# reject = 5 : leave application failed, cannot update database.  pass = false, error message : Fail to update database
+
+# def applyLeaveOld (psInput):
+# #def applyLeave (psInput):
+
+#     getLeaveTypes()
+#     getLeaveGroups()
+#     psYear = psInput.get("year", 0)
+#     psRacf = psInput.get("racf", "")
+#     psLeaveType = psInput.get("type", "")
+#     psLeaveLst = psInput.get("applying", "")
+#     psLeaveScreenLst = psInput.get("applyingScreen", "")
+#     psUpdateDB = psInput.get("updateDB", True)
+#     SharePointID = psInput.get("sharePointId")
+#     timeZone = psInput.get("timeZone", "")
+
+#     # For development
+#     newres = applyLeaveNew(psInput)
+
+#     # Get Super User 
+#     try:
+#         psSuperUser = session["superUser"]
+#     except:
+#         psSuperUser = False
+    
+#     if psSuperUser:
+#         psSuperUser = psInput.get("superUser")
+#     else:
+#         psSuperUser = False
+
+#     if psYear == 0 or len(psRacf) == 0 or len(psLeaveType) == 0 or len(psLeaveLst) == 0 or len(psLeaveScreenLst) == 0:
+#         return ({"pass": False, "error_message" : "Incorrect parameters", "result": None, "Status_code": 505})
+#     staffRecord = getStaffRecord(psRacf)
+#     leaveHistoryLst = getLeaveHistory(psYear, psYear, staffRecord)
+#     leaveTypeAttr = (list(filter(lambda r: (r["leave_type_id"].upper() == psLeaveType), leaveTypeLst))[0])
+#     if not isinstance(staffRecord, dict):
+#         oldres = {"pass": False, "error_message" : "Staff Record Not Exist", "result": None, "Status_code": 504}
+#         checkResult(oldres, newres, psInput, psRacf)
+#         return (oldres)
+#         #return ({"pass": False, "error_message" : "Staff Record Not Exist", "result": None, "Status_code": 504}) 
+
+#     if len (leaveTypeAttr) == 0:
+#         oldres = {"pass": False, "error_message" : "Leave Type Not Found", "result": None, "Status_code": 503}
+#         checkResult(oldres, newres, psInput, psRacf)
+#         return (oldres)
+#         #return ({"pass": False, "error_message" : "Leave Type Not Found", "result": None, "Status_code": 503}) 
+#     office = staffRecord["staff"]["office"]
+#     # applyingSlotLst : list which combine leave application in all rows
+#     # applyingSlotLstByRow : list which keep leave application row by row.
+#     applyingSlotLst = [ ]
+#     applyingSlotLstByRow = [ ]
+#     overlap = False
+#     # Loop through each applying leave period
+#     for rec in psLeaveLst:  
+        
+#         withinYr = chkPeriod (rec["startDate"], rec["endDate"], psYear)
+#         if not withinYr.get('pass'):
+#             oldres = {"pass": False, "error_message": withinYr.get('error_message'), "result": None, "Status_code": withinYr.get('Status_code')}
+#             checkResult(oldres, newres, psInput, psRacf)
+#             return (oldres)
+#             #return({"pass": False, "error_message": withinYr.get('error_message'), "result": None, "Status_code": withinYr.get('Status_code')})
+#         tmpApplyingSlotLst = checkOverlap(rec["startDate"], rec["startTime"], rec["endDate"], rec["endTime"],  psYear, office, staffRecord, applyingSlotLst, psLeaveType)
+#         # If no overlap, will get the expanded date slot for leave applying, else leaveSlotLst is empty    
+#         # put the expanded date slot into applyingSlotLstByRow for saving to DB into separate document.
+#         #if len(tmpApplyingSlotLst) > 0:
+#         if isinstance(tmpApplyingSlotLst, list):
+#             applyingSlotLst = combineTime(applyingSlotLst, tmpApplyingSlotLst)
+#             applyingSlotLstByRow.append(tmpApplyingSlotLst)
+#         else:
+#             overlap = True
+#             errormsg = tmpApplyingSlotLst
+#             break    
+#     if overlap:
+#         oldres = {"pass": False, "error_message" : errormsg, "result": None, "Status_code": 502}
+#         checkResult(oldres, newres, psInput, psRacf)
+#         return (oldres)
+#         #return ({"pass": False, "error_message" : errormsg, "result": None, "Status_code": 502})
+#     else:
+#         # Leave type = Annual Leave or Casual Leave :
+#         # 1. No overlap with
+#         #  the period already applied
+#         # 2. Consecutive leave days cannot more than the limits (include annual leave, casual leave, public holidays and weekends), unless leave is applied under superuser mode 
+#         # 3. Leave applied cannot more than leave entitle + carry forward.
+#         #if leaveTypeAttr.get("max_consecutive_days",0) > 0:
+#         result = checkConsecutiveDays(psYear, office, staffRecord, applyingSlotLst, leaveTypeAttr) 
+#         if not result.get("pass") and not psSuperUser:
+#             oldres = result
+#             checkResult(oldres, newres, psInput, psRacf)
+#             return (result)
+
+#         if leaveTypeAttr.get("entitlement_field", "") != "":
+#             if checkBalance(psYear, leaveTypeAttr, staffRecord, applyingSlotLst) < 0:
+#                 oldres = {"pass": False, "error_message" : "Not enough days left for the leave", "result": None, "Status_code": 501}
+#                 checkResult(oldres, newres, psInput, psRacf)
+#                 return (oldres)
+#                 #return ({"pass": False, "error_message" : "Not enough days left for the leave.", "result": None, "Status_code": 501})
+    
+#         newRefNo = getNewRefNo(psYear, psRacf)
+#         rowNo = 0
+
+#         total_sl = 0
+#         warning_sl_message = ""
+#         rowDtlLst = [ ]
+#         for row in applyingSlotLstByRow:
+#             #noOfCalendarDay = getCalendarDay(psYear, office, staffRecord, row)
+#             noOfCalendarDay = getCalendarDay(psYear, office, staffRecord, row, leaveTypeAttr)
+#             noOfWorkDay = getWorkDay (row)
+#             timeSlotLst = [ ]
+#             for s in row:
+#                 timeslot = {
+#                     "ldate" : date2Str(s["ldate"]),
+#                     "ltime": s["ltime"]
+#                 }
+#                 timeSlotLst.append(timeslot)
+        
+
+#             if (row[0]['type']) not in ["LVE04","LVE05"]:
+                
+#                 rowDtl = {
+#                     "start_date": psLeaveScreenLst[rowNo]["startDate"],
+#                     "start_time": psLeaveScreenLst[rowNo]["startTime"],
+#                     "end_date": psLeaveScreenLst[rowNo]["endDate"],
+#                     "end_time": psLeaveScreenLst[rowNo]["endTime"],
+#                     "no_of_workday": noOfWorkDay,
+#                     "no_of_calendarday": noOfCalendarDay,             
+#                     "period" : timeSlotLst
+#                         }
+#             elif (row[0]['type']) in ["LVE04","LVE05"]:
+#                 rowDtl = {
+#                     "start_date": psLeaveScreenLst[rowNo]["startDate"],
+#                     "start_time": psLeaveScreenLst[rowNo]["startTime"],
+#                     "end_date": psLeaveScreenLst[rowNo]["endDate"],
+#                     "end_time": psLeaveScreenLst[rowNo]["endTime"],
+#                     "no_of_workday": noOfWorkDay,
+#                     "no_of_calendarday": noOfCalendarDay,             
+#                     "no_of_consective": countConsecutiveDaysByType(psYear, staffRecord["staff"]["office"], leaveHistoryLst, applyingSlotLst, ["LVE04","LVE05"]),
+#                     "period" : timeSlotLst
+#                         }
+#                 # check total sick leave should be less than 7, else it will appear warnings
+#                 total_sl = noOfWorkDay
+#                 total_sl += countLeave(psYear, str("LVE04"), df['gcStatusApproved'][0], staffRecord) + countLeave(psYear, str("LVE05"), df['gcStatusApproved'][0], staffRecord)
+#                 total_sl += countLeave(psYear, str("LVE04"), df['gcStatusPending'][0], staffRecord) + countLeave(psYear, str("LVE05"), df['gcStatusPending'][0], staffRecord)
+#                 if total_sl > 7:
+#                     warning_sl_message = "Reminder:  Total Full Paid Sick Leave taken has already reached 7 days which is the maximum cap of current leave calendar year (included below leave application)"
+#             rowDtlLst.append(rowDtl)
+#             rowNo += 1
+#             approvallist = {
+#                 "approver1": staffRecord['staff']['approver1'],
+#                 "approval_date1": "",
+#                 "approver2": staffRecord['staff']['approver2'],
+#                 "approval_date2": "",                
+#                 "approver3": staffRecord['staff']['approver3'],
+#                 "approval_date3": ""
+#             }
+
+#         newLeaveRecord = {
+#             "ref_no" : newRefNo,
+#             "sharePointId" : SharePointID,
+#             "year" : psYear,
+#             "type" : psLeaveType,
+#             "applicationStatus" : df['gcStatusPending'][0],
+#             "approvalStatus": df['gcStatusPending1'][0],
+#             "submit_date": date2Str(date.today()),
+#             "lastUpdate": psRacf,
+#             "updateDate": date2Str(date.today()),
+#             "timeZone": timeZone,
+#             "approval": approvallist,
+#             "details": rowDtlLst
+#         }
+#         id = staffRecord["_id"]
+#         leaveRecord = staffRecord["leave_record"]
+#         leaveRecord.append(newLeaveRecord)
+#         updateRecordLst = [ ]
+#         updateRecord = {
+#             "field" : "leave_record",
+#             "value" : leaveRecord,
+#         }
+#         updateRecordLst.append(updateRecord)
+#         if psUpdateDB:
+#             result = updateDB2(id, updateRecordLst)
+#         else:
+#             oldres = {"pass": True, "error_message" : "VALIDATION MODE.  Data pass validation.  Database NOT updated !", "result": [{"workday": noOfWorkDay, "calendarDay": noOfCalendarDay}], "Status_code": 200, "Warnings": warning_sl_message}
+#             checkResult(oldres, newres, psInput, psRacf)
+#             return oldres
+#             #return ({"pass": True, "error_message" : "VALIDATION MODE.  Data pass validation.  Database NOT updated !", "result": [{"workday": noOfWorkDay, "calendarDay": noOfCalendarDay}], "Status_code": 200, "Warnings": warning_sl_message})
+#         if result.get("pass") and psUpdateDB:
+#             sendEmail(staffRecord, newRefNo, df['gcStatusPending1'][0], df['gcActionApply'][0], df['gcActionApply'][0], 1, 1)
+
+#         return (result)                
+
+# # Temp to check the difference of result between new apply leave and old apply leave
+# def checkResult(old_result, new_result, input, user):
+
+#     boolean = new_result != old_result
+
+#     if boolean:
+#         message = f"{user} is entering the leave input {input} \n\n ** But the result does not match **: \n\n Old : {old_result} \n New: {new_result} \n\n"
+#         title = "Please check the old and new result for applyleave"
+#         sendTo = "billy.chan@macys.com"
+#         sendCc = ""
+#     else:
+#         message = f"{user} is entering the leave input {input} \n\n ** The result is correct: **\n\n Old : {old_result} \n New: {new_result} \n\n"
+#         title = "No need to check the result for applyleave"
+#         sendTo = "billy.chan@macys.com"
+#         sendCc = ""
+
+#     try:
+#         mailer_to_mongoDB(message, title, sendTo, sendCc, "", "")
+#         #sendGrid(message, title, sendTo, sendCc, "", "")
+#     except:
+#         pass
+
+# parameters - leaveHistoryLst, Type
+# leaveHistoryLst Example: {'ref_no': 2022001, 'office': 'REG', 'racf': 'NF1BHC', 'staffname': 'BILLY CHAN', 'empID': '00013', 'dept': 'PBT', 'position': 'Regional Analyst Programmer', 'year': 2022, 'type': 'LVE05', 'sharePointId': '', 'startDate': '2022-12-05', 'startTime': 'Full Day', 'endDate': '2022-12-05', 'endTime': 'Full Day', 'applicationStatus': 'PENDING' ...
+# Type Example (String): LVE01, LVE02 
+# def countConsecutiveDaysByType( psYear, psOffice, leaveHistoryLst, ApplyLeaveLst, Type):
+#     consecutiveSlot = 0
+
+#     applicationleave = False
+
+#     LeaveHistoryLst = list(filter(lambda r: (r["applicationStatus"].upper() != df['gcStatusCancel'][0] and r["applicationStatus"].upper() != df['gcStatusReject'][0] and r["type"] in Type), leaveHistoryLst))
+#     LeaveHistoryLst.sort(key=lambda x: x.get('ldate'))
+#     combinedTimeSlot = combineTime(LeaveHistoryLst, ApplyLeaveLst)
+#     weekendHolidaysLst = getWeekendHolidays((psYear - 1), (psYear + 1), psOffice)
+#     combinedTimeSlot = combineTime (combinedTimeSlot, weekendHolidaysLst)
+
+
+#     currDate = combinedTimeSlot[0]["ldate"]
+#     currTime = combinedTimeSlot[0]["ltime"]
+
+#     maxvalue = 0
+#     canQuit = False
+
+#     for t in combinedTimeSlot:
+#         if currDate == t["ldate"] and t["type"]:
+#             if t["type"] == "weekend" or t["type"] == "holiday":
+#                 consecutiveSlot = consecutiveSlot
+#             else:
+#                 consecutiveSlot += 1
+#             currTime = "PM"
+#         elif (currDate == t["ldate"] + timedelta(-1)) and (currTime == "PM") and (t["ltime"] == "AM"):
+#             if t["type"] == "weekend" or t["type"] == "holiday":
+#                 consecutiveSlot = consecutiveSlot
+#                 currDate = t["ldate"]
+#                 currTime = t["ltime"]
+#             else:
+#                 consecutiveSlot += 1
+#                 currDate = t["ldate"]
+#                 currTime = t["ltime"]
+#         else:
+#             if t["type"] in Type:
+#                 consecutiveSlot = 1
+#             else:
+#                 consecutiveSlot = 0
+#             currDate = t["ldate"]
+#             currTime = t["ltime"]
+#         #print ("currDate : " + str(currDate) + " / " + "currTime : " + str(currTime)) #for my checking
+#         #print ("tDate : " + str(t["ldate"]) + " / " + "tTime : " + str(t["ltime"]) + " / " + "tType : " + str(t["type"])) #for my checking
+#         #print ("consecutiveSlot: " + str(consecutiveSlot)) #for my checking
+
+#         #if str((currDate).year) == "2023":
+
+#         #    print ("currDate : " + str(currDate) + " / " + "currTime : " + str(currTime)) #for my checking
+#         #    print ("tDate : " + str(t["ldate"]) + " / " + "tTime : " + str(t["ltime"]) + " / " + "tType : " + str(t["type"])) #for my checking
+#         #    print ("consecutiveSlot: " + str(consecutiveSlot)) #for my checking
+#         #    print ("maxvalue :" + str(maxvalue))
+
+#         # check apply leave is in checking period
+#         if (ApplyLeaveLst[-1]['ldate'] == currDate) and currTime == ApplyLeaveLst[-1]["ltime"]:
+#             canQuit = True
+        
+#         if consecutiveSlot > 0 :
+#             maxvalue = consecutiveSlot
+#         if consecutiveSlot == 0 and maxvalue > 0 and canQuit:
+#             consecutiveSlot = maxvalue / 2
+#             return consecutiveSlot
+    
+    
+#     workDay = getWorkDay(ApplyLeaveLst)
+#     if workDay > consecutiveSlot:
+#         consecutiveSlot = workDay
+
+
+#     return consecutiveSlot
+
+
+
+# def checkConsecutiveSickLeave (psCombinedSickLeave, psMaxSlNoCert, psApplyingSlotLst):
+#     slNoCertConsecutiveSlot = 0
+
+#     currDate = psCombinedSickLeave[0]["ldate"]
+#     currTime = psCombinedSickLeave[0]["ltime"]
+
+#     currConsecutiveDay = False
+    
+#     for t in psCombinedSickLeave:
+#         if currDate == t["ldate"]:
+
+#             if t["type"] == "LVE05" or t["type"] == "LVE04":
+#                 slNoCertConsecutiveSlot += 1
+#                 #if t["ldate"] ==  psApplyingSlotLst[0]["ldate"] and currTime == psApplyingSlotLst[0]["ltime"]:
+#                 if t["ldate"] ==  psApplyingSlotLst[0]["ldate"] and t["ltime"] == psApplyingSlotLst[0]["ltime"]:
+#                     currConsecutiveDay = True
+                
+#             currTime = "PM"
+#         elif (currDate == t["ldate"] + timedelta(-1)) and (currTime == "PM") and (t["ltime"] == "AM"):
+#             if t["type"] == "LVE05" or t["type"] == "LVE04":
+#                 slNoCertConsecutiveSlot += 1
+#                 #if t["ldate"] ==  psApplyingSlotLst[0]["ldate"] and currTime == psApplyingSlotLst[0]["ltime"]:
+#                 if t["ldate"] ==  psApplyingSlotLst[0]["ldate"] and t["ltime"] == psApplyingSlotLst[0]["ltime"]:
+#                     currConsecutiveDay = True
+#             currDate = t["ldate"]
+#             currTime = t["ltime"]
+#         else:
+#             #currConsecutiveDay = True
+#             if t["type"] == "LVE05" or t["type"] == "LVE04":
+#                 slNoCertConsecutiveSlot = 1
+#                 if t["ldate"] ==  psApplyingSlotLst[0]["ldate"] and t["ltime"] == psApplyingSlotLst[0]["ltime"]:
+#                     currConsecutiveDay = True
+#             else:
+#                 currConsecutiveDay = False
+#                 slNoCertConsecutiveSlot = 0
+#             currDate = t["ldate"]
+#             currTime = t["ltime"]
+
+#         #print ("currDate : " + str(currDate) + " / " + "currTime : " + str(currTime))
+
+#         #print ("tDate : " + str(t["ldate"]) + " / " + "tTime : " + str(t["ltime"]) + " / " + "tType : " + str(t["type"]))
+
+#         #print ("consecutiveSlot: " + str(slNoCertConsecutiveSlot) + " currConsectiveDay : " + str(currConsecutiveDay))
+
+
+#         if slNoCertConsecutiveSlot > (psMaxSlNoCert * 2) and currConsecutiveDay and psApplyingSlotLst[0]['type'] == 'LVE05':
+#             return ({"pass": False, "error_message" : "Reminder: For any sick leave periods that exceed 2 contiguous days, sick leave certificate is required", "result": None, "Status_code": 506})
+
+#     return({"pass": True, "error_message": "", "result": None, "daycount": 1, "Status_code": 200}) 
+
+
+
+# expand leave application days to half day timeslot
+# check if the leave slot fall into holidays, skip that leave slot if it is 
+# check if the leave slot overlapped with those applied before, retrun error if it is
+# return whole leave slot otherwise
+#parameter : 
+#psStartDate : Start Date of leave applying, in string (yyyy-mm-dd) format
+#psStartTime : Start Time of leave applying, in string, either "AM" or "PM"
+#psEndDate : End Date of leave applying in string (yyyy-mm-dd) format
+#psEndTime : End Time of leave applyingm in string, either "AM" or "PM"
+#psHolidayLst : List of time slot with holidays and weekends
+#psLeaveHistoryLst : List of time slot with leave history in the format [{"ref_no" int, "year" int, "type" string, "status" string, "ldate": datetime, "ltime": "AM" / "PM"}]
+#return:
+#if no overlap, return list of leave slot for the leave applying in the format :[{"ldate": datetime, "ltime": "AM" / "PM"}]
+#if overlap, return empty list
+# def checkOverlap(psStartDate, psStartTime, psEndDate, psEndTime, psYear, psOffice, psRecord, psApplyingSlotLst, psLeaveType):
+#     currDate = str2Date(psStartDate)
+#     currTime = psStartTime
+#     leaveDtl = [ ]
+#     weekendHolidaysLst = getWeekendHolidays((psYear - 1), (psYear + 1), psOffice)
+#     leaveHistoryLst = getLeaveHistory((psYear - 1), (psYear + 1), psRecord)
+#     #exclude leave that is canceled or rejected
+#     leaveHistoryLst = list(filter(lambda r: (r["applicationStatus"].upper() != df['gcStatusCancel'][0] and r["applicationStatus"].upper() != df['gcStatusReject'][0]), leaveHistoryLst))
+#     # loop through the holidays range applied
+
+#     while currDate <= str2Date(psEndDate):
+#         found = [ ]
+#         # check if the leave slot overlapped with the leave already applied
+#         overlap = filter(lambda o: (o["ldate"] == currDate) and (o["ltime"] == currTime), leaveHistoryLst)
+#         if (len(list(overlap))) > 0:
+#             leaveDtl = [ ]
+#             leaveDtl = "Leave applying is overlapping"
+#             return leaveDtl
+#         # check if the leave slot overlapped with the leave applying in different rows
+#         overlap = filter(lambda o: (o["ldate"] == currDate) and (o["ltime"] == currTime), psApplyingSlotLst)
+#         if (len(list(overlap))) > 0:
+#             leaveDtl = [ ]
+#             leaveDtl = "Leave applying is overlapping"
+#             return leaveDtl        
+#         # check if the leave slot is in holiday and weekend, if it is not in the holiday list, "found" will be empty and proceed to record in leave detail
+#         # if the leave slot is in holiday, "found" will not empty and will skip to record in leave detail
+#         found = list(filter(lambda d: (d["ldate"] == currDate) and (d["ltime"] == currTime), weekendHolidaysLst))
+#         if len(found) == 1 and (len(leaveDtl)) == 0:
+#             leaveDtl = [ ]
+#             leaveDtl = "Leave applying start in Weekends / Holidays"
+#             return leaveDtl
+#         if len(found) == 0:
+#             isHoliday = False
+#             leaveSlot = { "ldate": currDate, "ltime": currTime, "type": psLeaveType}
+#             leaveDtl.append(dict(leaveSlot))
+#         else:
+#             isHoliday = True
+#         if currTime.upper() == "PM":
+#             currDate = currDate + timedelta(1)
+#             currTime = "AM"
+#         elif (currDate == str2Date(psEndDate)) and (psEndTime == "AM"):
+#             break
+#         else:
+#             currTime = "PM" 
+#     if (isHoliday):
+#         leaveDtl = [ ]
+#         leaveDtl = "Leave applying end in Weekends / Holidays"
+#         return leaveDtl   
+#     return leaveDtl
+
+
+# check consecutive days of the leave applying and see if it exceeds the consecutive days allowed.
+# parameters: 
+# psCombinedTimeSlot : list of applying leave, leave already applied, holidays and weekend in the format [{"ldate": datetime, "ltime": "AM" / "PM"}]
+# psLimit : max. consecutive days allowed 
+# return :
+# total consecutive days or the max. consecutive days allowed + 0.5 (when the consective days exceeds the days allowed, it will stop checking and return.)
+# def checkConsecutiveDays (psYear, psOffice, psRecord, psApplyingSlotLst, psLeaveTypeAttr):
+#     consecutiveSlot = -3
+#     groupAttrLst = list(filter(lambda r: (r["groupID"] == psLeaveTypeAttr.get("leave_group")), leaveGroupLst))[0]
+#     if groupAttrLst.get("max_consecutive_days", "")  != "":
+#         relatedLveLst = []
+#         for lve in leaveTypeLst:
+#             #if lve["leave_group"] == groupAttrLst.get("groupID"):
+#             if lve["consecutive_days_group"] == psLeaveTypeAttr.get("consecutive_days_group"):
+#                 relatedLveLst.append(lve["leave_type_id"])
+    
+#         leaveHistoryLst = getLeaveHistory((psYear - 1), (psYear + 1), psRecord)
+#         # if leave is sick leave with cert or sick leave with no cert, check the Consecutive Sick Leave with no cert days
+#         if groupAttrLst.get("sick_leave", False):
+#             relatedSlLst = []
+#             for sl in leaveTypeLst:
+#                 slGrpAttrLst = list(filter(lambda r: (r["groupID"] == sl["leave_group"]), leaveGroupLst))[0]
+#                 if slGrpAttrLst.get("sick_leave", False):
+#                     relatedSlLst.append(sl["leave_type_id"])
+#                     if slGrpAttrLst.get("max_consecutive_days", "") != "":
+#                         maxConsecutiveSlNoCert = slGrpAttrLst.get("max_consecutive_days")
+#             slLeaveHistoryLst = list(filter(lambda r: (r["applicationStatus"].upper() != df['gcStatusCancel'][0] and r["applicationStatus"].upper() != df['gcStatusReject'][0] and r["type"] in relatedSlLst), leaveHistoryLst))
+#             combinedTimeSlot = combineTime(slLeaveHistoryLst, psApplyingSlotLst)
+
+#             # Added to check weekend and holiday if sick leave
+#             slweekendHolidaysLst = getWeekendHolidays((psYear - 1), (psYear + 1), psOffice)
+#             combinedTimeSlot = combineTime (combinedTimeSlot, slweekendHolidaysLst)
+
+#             result = checkConsecutiveSickLeave(combinedTimeSlot, maxConsecutiveSlNoCert, psApplyingSlotLst)
+#             if not result.get("pass"):
+#                 return (result)
+#         leaveHistoryLst = list(filter(lambda r: (r["applicationStatus"].upper() != df['gcStatusCancel'][0] and r["applicationStatus"].upper() != df['gcStatusReject'][0] and r["type"] in relatedLveLst), leaveHistoryLst))
+#         combinedTimeSlot = combineTime(leaveHistoryLst, psApplyingSlotLst)
+#         if groupAttrLst.get("consecutive_include_holidays", False):
+#             weekendHolidaysLst = getWeekendHolidays((psYear - 1), (psYear + 1), psOffice)
+#             combinedTimeSlot = combineTime (combinedTimeSlot, weekendHolidaysLst)
+    
+#         currDate = combinedTimeSlot[0]["ldate"]
+#         currTime = combinedTimeSlot[0]["ltime"]
+
+#         currConsecutiveDay = False
+
+#         for t in combinedTimeSlot:
+#             #print (str(currDate) + " / " + str(t["ldate"]) + " consecutiveSlot: " + str(consecutiveSlot))
+#             if currDate == t["ldate"]:
+#                 consecutiveSlot += 1
+#                 if t["ldate"] ==  psApplyingSlotLst[0]["ldate"] and currTime == psApplyingSlotLst[0]["ltime"]:
+#                     currConsecutiveDay = True
+#                 currTime = "PM"
+#             elif (currDate == t["ldate"] + timedelta(-1)) and (currTime == "PM") and (t["ltime"] == "AM"):
+#                 consecutiveSlot += 1
+#                 if t["ldate"] ==  psApplyingSlotLst[0]["ldate"] and currTime == psApplyingSlotLst[0]["ltime"]:
+#                     currConsecutiveDay = True
+#                 currDate = t["ldate"]
+#                 currTime = t["ltime"]                
+#             else:
+#                 if t["ldate"].strftime('%A') in ["Saturday","Sunday"]:
+#                     consecutiveSlot = -3
+#                 else:
+#                     consecutiveSlot = 0
+#                 #consecutiveSlot = -3
+#                 #if t["ldate"] ==  psApplyingSlotLst[0]["ldate"]:
+#                 #    consecutiveSlot = 0
+#                 currDate = t["ldate"]
+#                 currTime = t["ltime"]
+#                 currConsecutiveDay = False
+
+#             if consecutiveSlot > (groupAttrLst.get("max_consecutive_days", 0) * 2) and currConsecutiveDay:
+#                 #if groupAttrLst.get("groupID") != 1:
+#                     #return ({"pass": False, "error_message" : "Reminder: For any sick leave periods that exceed 2 contiguous days, sick leave certificate is required", "result": None,  "Status_code": 506})
+#                 if groupAttrLst.get("groupID") == 1:
+#                     return ({"pass": False, "error_message" : "Reminder: Maximum vacation taken at any one time is 2 WEEKS including Public Holidays, Saturdays and Sundays", "result": None,  "Status_code": 506})
+   
+#     elif psApplyingSlotLst[0]['type'] == 'LVE04':
+
+#         relatedSlLst = ['LVE04', 'LVE05']
+
+#         leaveHistoryLst = getLeaveHistory((psYear - 1), (psYear + 1), psRecord)
+
+#         slLeaveHistoryLst = list(filter(lambda r: (r["applicationStatus"].upper() != df['gcStatusCancel'][0] and r["applicationStatus"].upper() != df['gcStatusReject'][0] and r["type"] in relatedSlLst), leaveHistoryLst))
+#         combinedTimeSlot = combineTime(slLeaveHistoryLst, psApplyingSlotLst)
+#         # Added to check weekend and holiday if sick leave
+#         slweekendHolidaysLst = getWeekendHolidays((psYear - 1), (psYear + 1), psOffice)
+#         combinedTimeSlot = combineTime (combinedTimeSlot, slweekendHolidaysLst)
+
+#         result = checkConsecutiveSickLeave(combinedTimeSlot, 1, psApplyingSlotLst)
+
+        
+#         if not result.get("pass"):
+#             return (result)
+
+#     else:
+
+#         return({"pass": True, "error_message": "", "result": None, "Status_code": 200}) 
+     
+#     return ({"pass": True, "error_message": "", "result": None,  "Status_code": 200})
+
+# count the total calendar date.
+# input : list of leave applied - psPeriod, list of leave applied + holidays +weekend - psCombinedSlotLst
+# total calendar date = 
+#   consecutive calendar days (holidays + weekend) before the leave period
+#   consecutive calendar days for the leave period +
+#   consecutive calendar days (holidays + weekend) after the leave period
+# parameter:
+# psPeriod - leave slots that need to check for calendar day in the format [{"ldate" : datetime, "ltime": "AM"/ "PM"} ]
+# psCombinedSlotLst - leave slots that need to check + all leave applied before + holidays + weekend in the format  [{"ldate" : datetime, "ltime": "AM"/ "PM"} ]
+# return :
+# No. of calendarDay in int.
+# def getCalendarDay(psYear, psOffice, psRecord, psPeriod, psLeaveTypeAttr):
+#     weekendHolidays = getWeekendHolidays((psYear - 1), (psYear + 1), psOffice)
+#     leaveHistoryLst = getLeaveHistory((psYear - 1), (psYear + 1), psRecord)
+#     relatedLveLst = []
+#     for lve in leaveTypeLst:
+#         if lve["calendar_days_group"] == psLeaveTypeAttr.get("calendar_days_group"):
+#             relatedLveLst.append(lve["leave_type_id"])
+#     #leaveHistoryLst = list(filter(lambda r: (r["applicationStatus"].upper() != df['gcStatusCancel'][0] and r["applicationStatus"].upper() != df['gcStatusReject'][0]), leaveHistoryLst))
+#     leaveHistoryLst = list(filter(lambda r: (r["applicationStatus"].upper() != df['gcStatusCancel'][0] and r["applicationStatus"].upper() != df['gcStatusReject'][0] and r["type"] in relatedLveLst), leaveHistoryLst))
+#     combinedSlotLst = combineTime(weekendHolidays, leaveHistoryLst)
+#     combinedSlotLst = combineTime(combinedSlotLst, psPeriod)
+#     # count the consecutive calendar days (holidays + weekend) before the leave period
+#     currPosition = next((index for (index, d) in enumerate(combinedSlotLst) if (d["ldate"] == psPeriod[0]["ldate"]) and (d["ltime"] == psPeriod[0]["ltime"])), None)
+
+#     calendarDayBefore = 0
+#     currTime = psPeriod[0]["ltime"]
+#     currDate = psPeriod[0]["ldate"]
+#     while currPosition != 0:
+#         if currDate == combinedSlotLst[currPosition]["ldate"] and currTime == combinedSlotLst[currPosition]["ltime"]:
+#             currDate = combinedSlotLst[currPosition]["ldate"]
+#             currTime = combinedSlotLst[currPosition]["ltime"]
+#             currPosition -= 1
+#         elif currDate == combinedSlotLst[currPosition]["ldate"] and currTime == "PM" and combinedSlotLst[currPosition]["ltime"] == "AM":
+#             calendarDayBefore += 0.5
+#             currDate = combinedSlotLst[currPosition]["ldate"]
+#             currTime = combinedSlotLst[currPosition]["ltime"]
+#             currPosition -= 1
+#         elif currDate == combinedSlotLst[currPosition]["ldate"] + timedelta(days = 1) and currTime == "AM" and combinedSlotLst[currPosition]["ltime"] == "PM":
+#             calendarDayBefore += 0.5
+#             currDate = combinedSlotLst[currPosition]["ldate"]
+#             currTime = combinedSlotLst[currPosition]["ltime"]
+#             currPosition -= 1
+#         else:
+#             break
+
+#     # count the consecutive calendar days (holidays + weekend) after the leave period
+#     currTime = psPeriod[-1]["ltime"]
+#     currDate = psPeriod[-1]["ldate"]
+#     currPosition = next((index for (index, d) in enumerate(combinedSlotLst) if (d["ldate"] == psPeriod[-1]["ldate"]) and (d["ltime"] == psPeriod[-1]["ltime"])), None)
+#     calendarDayAfter = 0
+#     while currPosition != (len(combinedSlotLst) - 1):
+#         if currDate == combinedSlotLst[currPosition]["ldate"] and currTime == combinedSlotLst[currPosition]["ltime"]:
+#             currDate = combinedSlotLst[currPosition]["ldate"]
+#             currTime = combinedSlotLst[currPosition]["ltime"]
+#             currPosition += 1      
+#         elif currDate == combinedSlotLst[currPosition]["ldate"] and currTime == "AM" and combinedSlotLst[currPosition]["ltime"] == "PM":
+#             calendarDayAfter += 0.5
+#             currDate = combinedSlotLst[currPosition]["ldate"]
+#             currTime = combinedSlotLst[currPosition]["ltime"]
+#             currPosition += 1
+#         elif currDate == combinedSlotLst[currPosition]["ldate"] - timedelta(days = 1) and currTime == "PM" and combinedSlotLst[currPosition]["ltime"] == "AM":
+#             calendarDayAfter += 0.5
+#             currDate = combinedSlotLst[currPosition]["ldate"]
+#             currTime = combinedSlotLst[currPosition]["ltime"]
+#             currPosition += 1
+#         else:
+#             break
+        
+#     # count the consecutive calendar days for the leave period
+#     firstPosition = next((index for (index, d) in enumerate(combinedSlotLst) if (d["ldate"] == psPeriod[0]["ldate"]) and (d["ltime"] == psPeriod[0]["ltime"])), None)
+#     lastPosition = next((index for (index, d) in enumerate(combinedSlotLst) if (d["ldate"] == psPeriod[-1]["ldate"]) and (d["ltime"] == psPeriod[-1]["ltime"])), None)
+
+#     calendarDayLeave = ((lastPosition - firstPosition) / 2) + 0.5
+#     calendarDayTotal = calendarDayBefore + calendarDayLeave + calendarDayAfter
+
+
+#     return (calendarDayTotal)
+
+# get all date slot for weekend + holidays within the year period
+# parameters:
+# psYearStart: Beginning year of the weekend and holidays required
+# psYearEnd : Ending year of the weekend and holidays required
+# psOffice : Office of the holidays required
+# return:
+# list of date slot for weekends + holidays within the year period, format : [{"ldate": datetime, "ltime": "AM"/ "PM"}]
+# def getWeekendHolidays(psYearStart, psYearEnd, psOffice):
+#     yr = psYearStart
+#     weekendSlotLst = [ ]
+#     holidaySlotLst = [ ]
+#     while yr <= psYearEnd:
+#         weekendSlotLst = combineTime(weekendSlotLst, getAllWeekend(yr))
+#         holidaySlotLst = combineTime(holidaySlotLst, getHolidays(yr, psOffice))
+#         yr += 1
+#     return (combineTime(weekendSlotLst, holidaySlotLst))
+
+# def keep_mail_session(message, title, sendTo, sendCC, attachments = "", attachmentname = ""):
+
+#     # Convert attachments to bytes if provided
+#     if attachments:
+#         attachment_bytes = []
+#         for attachment in attachments:
+#             if isinstance(attachment, io.BytesIO):
+#                 attachment_bytes.append(attachment.getvalue())
+#             else:
+#                 attachment_bytes.append(attachment)
+#     else:
+#         attachment_bytes = []
+
+#     # Create a document to be inserted
+#     doc = {
+#         'message': message,
+#         'subject': title,
+#         'sendTo': sendTo,
+#         'sendCc': sendCC,
+#         'attachment': attachment_bytes,
+#         'attachmentname': attachmentname,
+#         'send_status': False
+#     }
+
+#     # Insert the document into the collection
+#     mailsession.insert_one(doc)

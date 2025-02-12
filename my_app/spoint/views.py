@@ -11,9 +11,10 @@ from io import BytesIO
 ## For SharePoint 
 #########################################################################################################
 from office365.sharepoint.files.file import File
-from office365.sharepoint.listitems.caml.caml_query import CamlQuery  
+#from office365.sharepoint.listitems.caml.caml_query import CamlQuery  
 #from office365.runtime.http.request_options import RequestOptions
-from office365.sharepoint.files.file_creation_information import FileCreationInformation
+#from office365.sharepoint.files.file_creation_information import FileCreationInformation
+from office365.sharepoint.files.creation_information import FileCreationInformation
 from my_app import ctx
 
 #########################################################################################################
@@ -118,15 +119,15 @@ def getSharepointfiles():
             _name = file.properties["Name"]    
             print("Folder {0}, File name: {1}".format(folder, _name))
 
-        #if you want to get the items in the folder        
-        caml_query = CamlQuery()
-        # Need _x0020 for space if the field has a space in the word 
-        caml_query.ViewXml = '''<View Scope="RecursiveAll"><Query><Where><Eq><FieldRef Name='SharePointID' /><Value Type='Text'>{0}</Value></Eq></Where></Query></View>'''.format(sharePointID)
-        caml_query.FolderServerRelativeUrl = relative_url
+        #if you want to get the items in the folder
+        # caml_query = CamlQuery()
+        # # Need _x0020 for space if the field has a space in the word 
+        # caml_query.ViewXml = '''<View Scope="RecursiveAll"><Query><Where><Eq><FieldRef Name='SharePointID' /><Value Type='Text'>{0}</Value></Eq></Where></Query></View>'''.format(sharePointID)
+        # caml_query.FolderServerRelativeUrl = relative_url
     
         # 3 Retrieve list items based on the CAML query         
-        oList = ctx.web.lists.get_by_title(sharePointReport) 
-        items = oList.get_items(caml_query) 
+        # oList = ctx.web.lists.get_by_title(sharePointReport) 
+        items = ctx.web.lists.get_by_title(sharePointReport).items.filter(f"SharePointID eq '{sharePointID}'").get().execute_query()
         ctx.execute_query()
 
         sharePoint_array = []         
@@ -251,15 +252,15 @@ def upload_file():
                         target_folder = ctx.web.get_folder_by_server_relative_path(relative_url)                        
                         ctx.execute_query()
                         
-                        info = FileCreationInformation()                        
-                        info.content = file.read()        
+                        # info = FileCreationInformation()
+                        # info.content = file.read()        
                         #enable below for control of each size of the file. 
                         # if  len(info.content) >  1024 * 1024 * 1:    
                         #     return f"The size of {file.filename} exceeds 2 MB limit !", 555                                                                            
                         
-                        info.url = filename                                  
-                        info.overwrite = True                                
-                        upload_file = target_folder.files.add(info)             
+                        # info.url = filename                                  
+                        # info.overwrite = True                                
+                        upload_file = target_folder.files.add(url=filename, content="", overwrite=True)             
                    
                         ctx.execute_query()
                         list_item = upload_file.listItemAllFields # get associated list item                                 
@@ -274,7 +275,8 @@ def upload_file():
 
                 return "OK",200
                                 
-            except Exception as e:                    
+            except Exception as e: 
+                print (e)                   
                 return "Upload Error", 507
 
 

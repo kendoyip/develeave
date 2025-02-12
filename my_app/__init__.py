@@ -50,23 +50,23 @@ def create_app():
 
     env = os.environ['ENVIRONMENT']      
 
-    if env == "HEROKU":        
+    #if env == "HEROKU":        
         # read MailerToGo env vars
-        app.mailertogo_host     = os.environ.get('MAILERTOGO_SMTP_HOST')
-        app.mailertogo_port     = os.environ.get('MAILERTOGO_SMTP_PORT', 587)
-        app.mailertogo_user     = os.environ.get('MAILERTOGO_SMTP_USER')
-        app.mailertogo_password = os.environ.get('MAILERTOGO_SMTP_PASSWORD')
-        app.mailertogo_domain   = os.environ.get('MAILERTOGO_DOMAIN', "mydomain.com")
-        app.recipient_domain = os.environ.get('RECIPIENT_DOMAIN')
-        app.macys_domain = os.environ.get('MACYS_DOMAIN')
+        #app.mailertogo_host     = os.environ.get('MAILERTOGO_SMTP_HOST')
+        #app.mailertogo_port     = os.environ.get('MAILERTOGO_SMTP_PORT', 587)
+        #app.mailertogo_user     = os.environ.get('MAILERTOGO_SMTP_USER')
+        #app.mailertogo_password = os.environ.get('MAILERTOGO_SMTP_PASSWORD')
+        #app.mailertogo_domain   = os.environ.get('MAILERTOGO_DOMAIN', "mydomain.com")
+        #app.recipient_domain = os.environ.get('RECIPIENT_DOMAIN')
+        #app.macys_domain = os.environ.get('MACYS_DOMAIN')
 
 
     if env == "LOCAL":
         # read Local .env
-        app.mailertogo_host     = os.environ["MAILERTOGO_SMTP_HOST"]
-        app.mailertogo_port     = os.environ["MAILERTOGO_SMTP_PORT"]
-        app.mailertogo_domain   = os.environ["MAILERTOGO_DOMAIN"]
-        app.config['recipient_domain'] = os.environ["RECIPIENT_DOMAIN"]
+    #    app.mailertogo_host     = os.environ["MAILERTOGO_SMTP_HOST"]
+    #    app.mailertogo_port     = os.environ["MAILERTOGO_SMTP_PORT"]
+    #    app.mailertogo_domain   = os.environ["MAILERTOGO_DOMAIN"]
+    #    app.config['recipient_domain'] = os.environ["RECIPIENT_DOMAIN"]
         app.config['APP_EMAIL']= os.environ['APP_EMAIL']
         app.config['APP_RACF']= os.environ['APP_RACF']
       

@@ -67,6 +67,7 @@ def _get_token_from_cache(scope=None):
 def getPhoto(email=None):
 
     try:
+
     
     # if (os.environ['ENVIRONMENT']=="PROD"):                
     #     #check whether it's Macys's email account
@@ -75,12 +76,13 @@ def getPhoto(email=None):
     # else:
     #     print("Getting photo for development")       
     #     return send_from_directory("frontend/public/static/img", "anonymous.jpg")
+        
     
         token = _get_token_from_cache(json.loads(os.environ['SCOPE']))
         if not token and not os.environ:
             return redirect(url_for("entry.login"))
     
-        ## Getting photo          
+        ## Getting photo     
         
         ##endpoint = "https://graph.microsoft.com/v1.0/me/photos/120x120/$value"
 
