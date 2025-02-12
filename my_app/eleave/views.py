@@ -1646,7 +1646,8 @@ def getAllLeave(racf, year, leavetype, consecutive_search = False, otherRefNo = 
 
                                 history.append(data)
                         else:
-                            if (leave_record['year'] == year) and leave_record['applicationStatus'] != df['gcStatusReject'][0] and leave_record['applicationStatus'] != df['gcStatusCancel'][0]:
+                            # Normal leave within year or other leave without year limitation check
+                            if ((leave_record['year'] == year) and leave_record['applicationStatus'] != df['gcStatusReject'][0] and leave_record['applicationStatus'] != df['gcStatusCancel'][0]) or (leave_record['otherRefNo'] != "" and leave_record['applicationStatus'] != df['gcStatusReject'][0] and leave_record['applicationStatus'] != df['gcStatusCancel'][0]):
                                 data = {
                                     "applied_date": period['ldate'],
                                     "applied_time": period['ltime'],
@@ -1654,7 +1655,7 @@ def getAllLeave(racf, year, leavetype, consecutive_search = False, otherRefNo = 
                                 }
 
                                 history.append(data)
-                    
+       
     return history
 
 def checkConsecutive(racf, year, apply_h, type, office):
