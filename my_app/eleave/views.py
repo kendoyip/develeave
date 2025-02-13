@@ -371,12 +371,11 @@ def getAllSpecialRef(racf, super, localtime):
 
     for rec in record:
 
-
         if super:
             if rec['status'] == "active":
                 result.append({'ref_no': rec['ref_no']})
         else:
-            if rec['entitled_days'] > float(len(getAllLeave(rec['racf'], rec['year'], rec['leave_type'], False, rec['ref_no']))):
+            if rec['entitled_days'] > float(len(getAllLeave(rec['racf'], rec['year'], rec['leave_type'], False, rec['ref_no']))) * 0.5:
                 if rec['status'] == "active" and datetime.strptime(rec['period_end'], '%Y-%m-%d') >= localtime: 
                     result.append({'ref_no': rec['ref_no']})
 
@@ -2785,8 +2784,6 @@ def listApprovedLeaveByYear(psInput):
                 if (((datetime.strptime(details["start_date"],'%Y-%m-%d').date() - date_input.date()).days) >= 1 and not superUser and showLeave) or (superUser):
                     approvalRecordLst.append(leaveRecord)
         approvalRecordLst = sorted(approvalRecordLst, key=lambda d: (d["approvalStatus"], d["staff"], d["racf"], d["ref_no"]))
-    
-    print (approvalRecordLst)
 
     return ({"pass": True, "error_message" : None, "result": approvalRecordLst, "Status_code": 200}) 
 
