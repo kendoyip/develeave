@@ -70,7 +70,7 @@ def create_app():
         app.config['APP_EMAIL']= os.environ['APP_EMAIL']
         app.config['APP_RACF']= os.environ['APP_RACF']
       
-
+    
     #app.config['MAIL_SERVER']='smtp.us-west-1.mailertogo.net'
     #app.config['MAIL_PORT'] = 587
     #app.config['MAIL_SERVER']='appmailos.federated.fds'

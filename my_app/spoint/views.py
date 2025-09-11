@@ -11,10 +11,10 @@ from io import BytesIO
 ## For SharePoint 
 #########################################################################################################
 from office365.sharepoint.files.file import File
-#from office365.sharepoint.listitems.caml.caml_query import CamlQuery  
-#from office365.runtime.http.request_options import RequestOptions
-#from office365.sharepoint.files.file_creation_information import FileCreationInformation
-from office365.sharepoint.files.creation_information import FileCreationInformation
+# from office365.sharepoint.listitems.caml.caml_query import CamlQuery  
+# from office365.runtime.http.request_options import RequestOptions
+# from office365.sharepoint.files.file_creation_information import FileCreationInformation
+# from office365.sharepoint.files.creation_information import FileCreationInformation
 from my_app import ctx
 
 #########################################################################################################

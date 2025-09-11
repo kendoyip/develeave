@@ -196,8 +196,10 @@ def getTodayDate():
 @entry.route('/api/getUserProfile',methods=['POST'])
 @checkLogged.check_logged
 def getUserProfile():                
+
     content = request.get_json() #python data          
     impersonatedUser = ""
+
     if content:
         impersonatedUser = content['impersonatedUser']        
 
@@ -242,7 +244,7 @@ def construct_event_detail(event_name, **event_details):
    
 def establishSessionData(impersonatedUser=""):
 
-    try:        
+    try:       
 
         racf = ""
 
@@ -271,6 +273,7 @@ def establishSessionData(impersonatedUser=""):
              
         else:
             racf = current_app.config['APP_RACF'].upper()
+
 
         if len(impersonatedUser) > 0:            
             racf  = impersonatedUser    
@@ -306,10 +309,11 @@ def establishSessionData(impersonatedUser=""):
         session['racf'] = sessionData["userProfile"]["racf"]        
         session['superUser'] = sessionData["userProfile"]["superUser"]        
         sessionData["sharePointPath"] = sharepoint_path
-    
+
         return sessionData, 200 
 
-    except Exception as e:             
+    except Exception as e:         
+        print (e)    
         return "Session establish error !!", 501
              
                
