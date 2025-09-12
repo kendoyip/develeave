@@ -33,10 +33,14 @@ load_dotenv()
 import checkLogged
 from my_app import db,  client
 from dateutil import parser
+import time
 
 #ical
 import pytz
 from icalendar import Calendar, Event,  vText
+
+
+
 
 eleave = Blueprint('eleave', __name__)
 
@@ -56,6 +60,7 @@ otherLeaves = db["other_leaves"]
 #Global Constant
 status = list(maintenance.find({"table": { "$eq" : "globalConstant"}}))
 df = pd.DataFrame(status)
+
 
 ## parameters
 #leaveOffice = "HKG"
@@ -102,10 +107,6 @@ def getUserList():
             return  jsonify({'error_message' : 'Error to get user list.  Please contact regional PBT !'}), 501
     except:
         return jsonify({'error_message' : 'Error to get user list.  Please contact regional PBT !'}), 501         
-
-
-
-
 
 ## Functions 
 
@@ -303,9 +304,13 @@ def date2Str(psDate):
 def getStaffRecord (psRacf):
     if len(psRacf) > 0 :
         staffRecord = eleaveDtl.find_one ( {"staff.racf" : { '$regex' : psRacf, '$options' : "i"} , "staff.status": { '$regex': "ACTIVE", '$options': "i"} } )
+
         return(staffRecord)
     else:
         return None
+
+
+
 
 def getLeaveTypes():
     global leaveTypeLst
@@ -1319,6 +1324,7 @@ def sendEmail(psRecord, psRefNo, otherRefNo, psAction, psRequest, finalapprover 
 
 
     leaveContent = list(filter(lambda r: (r["ref_no"] == int(psRefNo)), psRecord["leave_record"]))
+    print (psRecord["leave_record"])
     leavePeriod = ""
     for leaveitem in leaveContent[0]["details"]:
         start_date = datetime.strptime(str(leaveitem.get("start_date")), '%Y-%m-%d').strftime('%m/%d/%Y')
@@ -1659,6 +1665,8 @@ def getAllLeave(racf, year, leavetype, consecutive_search = False, otherRefNo = 
 
 def checkConsecutive(racf, year, apply_h, type, office):
 
+    spt = datetime.now()
+
     leave_h = getAllLeave(racf, year, type, True)
 
     min_date = min(apply_h, key=lambda x: x['applied_date'])['applied_date']
@@ -1731,6 +1739,7 @@ def checkConsecutive(racf, year, apply_h, type, office):
 
     rdf = pd.DataFrame(result_d)
 
+
     #########################################
     # Step 3 : Count the numbere of consecutive day based on the leave type
     #########################################
@@ -1748,32 +1757,42 @@ def checkConsecutive(racf, year, apply_h, type, office):
     except:
         max_al_days = 0
 
+    # Get information from leave_groups number
+    leave_group_no = (list(leaveTypes.find({'leave_type_id': type}))[0]['leave_group'])
+
     for i, r in rdf.iterrows():
+
 
         # General consective count
         if r['Applied'] != "" or r['Apply'] != "":
             count += 0.5
             checking_list.append(r['Apply'])
 
-        if r['Applied'] == "LVE02" or r['Apply'] == "LVE02":
-            casual_count += 0.5
-        else:
-            casual_count = 0
 
         # Annual Leave, Causal Leave 
-        if type == "LVE01" or type == "LVE02" or ((list(leaveTypes.find({'leave_type_id': type}))[0]['leave_group']) == 1):
+
+        if type == "LVE01" or type == "LVE02" or leave_group_no == 1:
 
             # Return error if the 14 days consective is applying, not the past applied (No including No-pay because No-pay cannot exceed 5 working days)
             if count > max_al_days and any(value != '' for value in checking_list) and type != "LVE06":
                 return ({"consecutive": True, "error_message" : "Reminder: Maximum vacation taken at any one time is 2 WEEKS including Public Holidays, Saturdays and Sundays", "result": None,  "Status_code": 506, "no_of_consective": sl_count})
 
             # Special Checking for India: Cannot be consecutive 4
-            if office == "DEL" and type == "LVE02" and casual_count > 3:
-                return ({"consecutive": True, "error_message" : "Reminder:Casual leave cannot be applied for 4 or more consecutive days", "result": None,  "Status_code": 506, "no_of_consective": sl_count})
+            if office == "DEL" and type == "LVE02": 
+
+                if r['Applied'] == "LVE02" or r['Apply'] == "LVE02":
+                    casual_count += 0.5
+                elif (r['Day of Week'] == "Saturday" or r['Day of Week'] == "Sunday") or 'LVE01' in r['Applied']:
+                    casual_count = casual_count
+                else:
+                    casual_count = 0
+
+                if casual_count > 3:
+                    return ({"consecutive": True, "error_message" : "Reminder: Casual leave cannot be applied for 4 or more consecutive days", "result": None,  "Status_code": 506, "no_of_consective": sl_count})
 
             # No pay leave cannot exceed 5 working days
             if type == "LVE06":
-                if (r['Day of Week'] == "Saturday" or r['Day of Week'] == "Sunday"):
+                if (r['Day of Week'] == "Saturday" or r['Day of Week'] == "Sunday") or (r['Applied'] != "" and 'LVE' not in r['Applied']):
                     count -= 0.5
                 if count > 5:
                     return ({"consecutive": True, "error_message" : "Reminder: No pay taken at any one time is 1 WEEK including Public Holidays, Saturdays and Sundays", "result": None,  "Status_code": 506, "no_of_consective": sl_count})
@@ -1843,8 +1862,11 @@ def checkConsecutive(racf, year, apply_h, type, office):
             checking_list = [ ]
         
         # For developing checking
-        #print (f"{r['Date']}/{r['Time']}/{r['Applied']}/{r['Apply']}, count : {count}, no cert count : {sl_count}")
+        # print (f"{r['Date']}/{r['Time']}/{r['Applied']}/{r['Apply']}, count : {count}, causal count : {casual_count}")
 
+    # ept = datetime.now()
+    # execution_time = ept - spt
+    # print(f"Finsih Consecutive Checking Execution time: {execution_time.total_seconds()} seconds")
     
     return ({"consecutive": False, "error_message" : "Passed", "no_of_consective": sl_count})
 
@@ -2135,6 +2157,7 @@ def applyLeave (psInput):
                 if approver_status != "ACTIVE":
                     return ({"pass": False, "error_message" : "Invalid approver status, please contact HR for confirmation", "result": None,  "Status_code": 509})
 
+
         ################################################### Regular Leave checking ###################################################
 
         if list(leaveTypes.find({'leave_type_id': type}))[0]['other_leave'] is False:
@@ -2173,7 +2196,9 @@ def applyLeave (psInput):
             cons = checkConsecutive(racf, year, allApplying, type, office)
             if cons['consecutive'] and not super:
                 return ({"pass": False, "error_message" : cons['error_message'], "result": None,  "Status_code": cons['Status_code']})
-        
+            
+
+
         ################################################### Other Leave checking ###################################################
         elif list(leaveTypes.find({'leave_type_id': type}))[0]['other_leave']:
 
@@ -2290,9 +2315,9 @@ def applyLeave (psInput):
             
         return update
 
+
     # All pass not submission
     return ({"pass": True, "error_message" : "VALIDATION MODE.  Data pass validation.  Database NOT updated !", "result": [{"workday": workday, "calendarDay": oooday}], "Status_code": 200, "Warnings": warnings})
-
 
 
 def listLeave (psInput):
