@@ -1782,10 +1782,6 @@ def checkConsecutive(racf, year, apply_h, type, office):
 
                 if r['Applied'] == "LVE02" or r['Apply'] == "LVE02":
                     casual_count += 0.5
-                elif (r['Day of Week'] == "Saturday" or r['Day of Week'] == "Sunday") or r['Applied'] != "":
-                    casual_count = casual_count
-                else:
-                    casual_count = 0
 
                 if casual_count > 3:
                     return ({"consecutive": True, "error_message" : "Reminder: Casual leave cannot be applied for more than 3 consecutive days", "result": None,  "Status_code": 506, "no_of_consective": sl_count})
@@ -1795,7 +1791,7 @@ def checkConsecutive(racf, year, apply_h, type, office):
                 if (r['Day of Week'] == "Saturday" or r['Day of Week'] == "Sunday") or (r['Applied'] != "" and 'LVE' not in r['Applied']):
                     count -= 0.5
                 if count > 5:
-                    return ({"consecutive": True, "error_message" : "Reminder: Please contact HR if no pay leave exceeds 5 consecutive working days.", "result": None,  "Status_code": 506, "no_of_consective": sl_count})
+                    return ({"consecutive": True, "error_message" : "Reminder: No pay taken at any one time is 1 WEEK including Public Holidays, Saturdays and Sundays", "result": None,  "Status_code": 506, "no_of_consective": sl_count})
 
             # Consider consecutive weekends only if a leave has been applied before
             if r['Day of Week'] == "Saturday" and rdf.iloc[i-1]['Applied'] == "" and rdf.iloc[i-1]['Apply'] == "":
@@ -1862,7 +1858,7 @@ def checkConsecutive(racf, year, apply_h, type, office):
             checking_list = [ ]
         
         # For developing checking
-        # print (f"{r['Date']}/{r['Time']}/{r['Applied']}/{r['Apply']}, count : {count}, causal count : {casual_count}")
+        print (f"{r['Date']}/{r['Time']}/{r['Applied']}/{r['Apply']}, count : {count}, causal count : {casual_count}")
 
     # ept = datetime.now()
     # execution_time = ept - spt
