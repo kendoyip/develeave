@@ -1518,7 +1518,7 @@ def sendEmail(psRecord, psRefNo, otherRefNo, psAction, psRequest, finalapprover 
     if psAction == df['gcActionApprove'][0] and psRequest == df['gcActionCancel'][0]:
         sendTo = psRecord["staff"]["alteremail"] if psRecord["staff"]["alteremail"] is not None else psRecord["staff"]["email"]
         if finalapprover == currentapprover:
-            sendCc = cc_general_list + ";" + cc_sl_limit_list
+            sendCc = ";".join([p for p in [cc_general_list, cc_sl_limit_list, cc_no_pay] if p and p.strip()])
             title = "<E-LEAVE> " + str(psRecord["staff"]["name"]) + " (" + str(psRecord["staff"]["dept"]) + ") " + " - " + "Cancel " + str(typename) + " #APPROVED"
             message = "Dear Applicant, " + "\n" + "\n"  + "Cancel Approval Status :" + "\n" + Approval_Status + "\n" + "Leave Period" + "\n" + leavePeriod + "\n"+ cancelicsmessage + "\n" + "\n" + "Thanks," + "\n" + "e-Leave"
             try:
