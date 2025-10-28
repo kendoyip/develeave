@@ -11,9 +11,11 @@ from io import BytesIO
 ## For SharePoint 
 #########################################################################################################
 from office365.sharepoint.files.file import File
+from office365.sharepoint.files.file_creation_information import FileCreationInformation
+
 # from office365.sharepoint.listitems.caml.caml_query import CamlQuery  
 # from office365.runtime.http.request_options import RequestOptions
-# from office365.sharepoint.files.file_creation_information import FileCreationInformation
+# from office365.sharepoint.files import FileCreationInformation
 # from office365.sharepoint.files.creation_information import FileCreationInformation
 from my_app import ctx
 
@@ -200,6 +202,8 @@ def download_sharepoint_file():
 
 
 
+
+
 @spoint.route('/api/upload', methods=['POST'])
 @checkLogged.check_logged
 def upload_file():
@@ -252,15 +256,16 @@ def upload_file():
                         target_folder = ctx.web.get_folder_by_server_relative_path(relative_url)                        
                         ctx.execute_query()
                         
-                        # info = FileCreationInformation()
-                        # info.content = file.read()        
+                        info = FileCreationInformation()                        
+                        info.content = file.read()        
                         #enable below for control of each size of the file. 
                         # if  len(info.content) >  1024 * 1024 * 1:    
                         #     return f"The size of {file.filename} exceeds 2 MB limit !", 555                                                                            
                         
-                        # info.url = filename                                  
-                        # info.overwrite = True                                
-                        upload_file = target_folder.files.add(url=filename, content="", overwrite=True)             
+                        info.url = filename                                  
+                        info.overwrite = True         
+                     
+                        upload_file = target_folder.files.add(info)         
                    
                         ctx.execute_query()
                         list_item = upload_file.listItemAllFields # get associated list item                                 
@@ -275,9 +280,9 @@ def upload_file():
 
                 return "OK",200
                                 
-            except Exception as e: 
-                print (e)                   
+            except Exception as e:                    
                 return "Upload Error", 507
+
 
 
 ###################################################################################

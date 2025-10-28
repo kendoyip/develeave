@@ -1251,6 +1251,7 @@ def postmarker(message, title, sendTo, sendCC, attachment=None, attachmentname=N
                   'Attachments':  attachedfiles
                   }
     
+
     import json
     data = json.dumps(parameters)
 
@@ -1382,6 +1383,21 @@ def sendEmail(psRecord, psRefNo, otherRefNo, psAction, psRequest, finalapprover 
 
     tz = leaveContent[0]["timeZone"]
 
+    cc_no_pay = ""
+    if leaveContent[0]["type"] == "LVE06":
+        # Make email list for sending out to specific recipient by defined cc_sl_limit in MongoDB
+        cc_no_pay = str(psRecord["staff"]["cc_no_pay"]).replace(",", ";")
+        cc_no_pay = cc_no_pay.split(";")
+        for index, recipient in enumerate(cc_no_pay):
+            try:
+                cc_no_pay[index] = getStaffRecord(recipient.strip())['staff']["alteremail"] if getStaffRecord(recipient.strip())['staff']["alteremail"] is not None else getStaffRecord(recipient.strip())["staff"]["email"]
+            except:
+                pass
+        
+        cc_no_pay = ';'.join(cc_no_pay)
+    
+    cc_no_pay = str(cc_no_pay)
+
     # Sharepoint document
     site = "https://macysinc.sharepoint.com/sites/MMGOverseas/eleave" + str(leaveContent[0]["year"]) + "/Forms/AllItems.aspx?id=%2Fsites%2FMMGOverseas%2Feleave" + str(leaveContent[0]["year"]) +"%2F" + str(psRecord["staff"]["racf"]) + "%2F&FilterType1=Text&viewid=720379f5-eb23-410f-81d1-f4e43a1a1cab&FilterField1=SharePointID&FilterValue1=" + str(leaveContent[0]["sharePointId"])
     if leaveContent[0]["type"] == "LVE04": sickleavewithcertmsg = "\n" + "Please download the supporting document(s) via the SharePoint link: " + "\n" + str(site)
@@ -1459,7 +1475,7 @@ def sendEmail(psRecord, psRefNo, otherRefNo, psAction, psRequest, finalapprover 
     if psAction == df['gcActionApprove'][0] and psRequest == df['gcActionApply'][0]:
         sendTo = psRecord["staff"]["alteremail"] if psRecord["staff"]["alteremail"] is not None else psRecord["staff"]["email"]
         if finalapprover == currentapprover:
-            sendCc = cc_general_list + ";" + cc_sl_limit_list
+            sendCc = ";".join([p for p in [cc_general_list, cc_sl_limit_list, cc_no_pay] if p and p.strip()])
             title = "<E-LEAVE> " + str(psRecord["staff"]["name"]) + " (" + str(psRecord["staff"]["dept"]) + ") " + " - " + "Apply " + str(typename) + " #APPROVED"
             if "SICK" in str(typename).upper() and int(sickleave_count) > 2:
                 message = "Dear Applicant, " + "\n" + "\n"  + "Approval Status :" + "\n" + Approval_Status  + "\n" + "Leave Period" + "\n" + leavePeriod + sickleavewithcertmsg + "\n" + "*Reminder: The total number of sick leave taken is " + str(sickleave_count) + " consecutive days" + "\n\n" + icsmessage + "\n" + "\n"  + "Thanks," + "\n" + "e-Leave"
@@ -1480,7 +1496,7 @@ def sendEmail(psRecord, psRefNo, otherRefNo, psAction, psRequest, finalapprover 
     # Reject end instantly (Apply)
     if psAction == df['gcActionReject'][0] and (psRequest == df['gcActionApply'][0]):
         sendTo = psRecord["staff"]["alteremail"] if psRecord["staff"]["alteremail"] is not None else psRecord["staff"]["email"]
-        sendCc = cc_general_list + ";" + cc_sl_limit_list 
+        sendCc = ";".join([p for p in [cc_general_list, cc_sl_limit_list] if p and p.strip()])
         title = "<E-LEAVE> " + str(psRecord["staff"]["name"]) + " (" + str(psRecord["staff"]["dept"]) + ") " + " - " + "Apply " + str(typename) + " #REJECTED"
         message = "Dear Applicant, " + "\n" + "\n"  + "Approval Status :" + "\n" + Approval_Status + "\n" + "Leave Period" + "\n" + leavePeriod + "\n" + "Thanks," + "\n" + "e-Leave"
         try:
@@ -1490,7 +1506,7 @@ def sendEmail(psRecord, psRefNo, otherRefNo, psAction, psRequest, finalapprover 
     # Reject end instantly (Cancel)
     if psAction == df['gcActionReject'][0] and (psRequest == df['gcActionCancel'][0]):
         sendTo = psRecord["staff"]["alteremail"] if psRecord["staff"]["alteremail"] is not None else psRecord["staff"]["email"]
-        sendCc = cc_general_list + ";" + cc_sl_limit_list 
+        sendCc = ";".join([p for p in [cc_general_list, cc_sl_limit_list] if p and p.strip()])
         title = "<E-LEAVE> " + str(psRecord["staff"]["name"]) + " (" + str(psRecord["staff"]["dept"]) + ") " + " - " + "Cancel " + str(typename) + " #REJECTED"
         message = "Dear Applicant, " + "\n" + "\n"  + "Cancel Approval Status :" + "\n" + Approval_Status + "\n" + "Leave Period" + "\n" + leavePeriod + "\n" + "Thanks," + "\n" + "e-Leave"
         try:
@@ -1858,7 +1874,7 @@ def checkConsecutive(racf, year, apply_h, type, office):
             checking_list = [ ]
         
         # For developing checking
-        print (f"{r['Date']}/{r['Time']}/{r['Applied']}/{r['Apply']}, count : {count}, causal count : {casual_count}")
+        # print (f"{r['Date']}/{r['Time']}/{r['Applied']}/{r['Apply']}, count : {count}, causal count : {casual_count}")
 
     # ept = datetime.now()
     # execution_time = ept - spt
@@ -2174,6 +2190,7 @@ def applyLeave (psInput):
 
                 if allworkday > entitled:
                     return ({"pass": False, "error_message" : "Not enough days left for the leave", "result": None,  "Status_code": 501})
+            
             # Sick leave
             if type == "LVE04" or type == "LVE05":
                 max_sl_days = list(leaveGroups.find({'groupID': list(leaveTypes.find({'leave_type_id': type}))[0]['leave_group']}))[0]['max_applied_days']
@@ -2181,12 +2198,13 @@ def applyLeave (psInput):
                 allslworkday = float(len(getAllLeave(racf, year, ["LVE04", "LVE05"], False))) * 0.5
                 if allslworkday >= max_sl_days:
                     warnings = "Reminder:  Total Full Paid Sick Leave taken has already reached 7 days which is the maximum cap of current leave calendar year (included below leave application)"
+            
             # No pay leave
             if type == "LVE06":
                 entitled = (getYearEntitlement(year, getStaffRecord(racf), "LVE01") + getYearCarryForward(year, getStaffRecord(racf), "LVE01"))
                 allworkday = float(len(getAllLeave(racf, year, ["LVE01"], False))) * 0.5
                 if (entitled - allworkday) > 0:
-                    return ({"pass": False, "error_message" : "Applying no pay leave is not allowed", "result": None,  "Status_code": 510})
+                    warnings = "Reminder: You have remaining annual leave entitlement for the current leave calendar year"
 
             # Check consecutive
             cons = checkConsecutive(racf, year, allApplying, type, office)
@@ -2211,7 +2229,6 @@ def applyLeave (psInput):
             # Within allowed period
             for applyingrecord in allApplying:
                 if (o_start <= applyingrecord['applied_date'] <= o_end) is False:
-                    print ("Here")
                     return ({"pass": False, "error_message" : "Leave applying is not within the allowed period", "result": None, "Status_code": 511})
 
             # Entitled Days checking
@@ -3003,7 +3020,7 @@ def apiPrintApply():
         
 
             # Summarize the number of balance
-            print (displayLeaveHistoryHdr)
+            # print (displayLeaveHistoryHdr)
             if rec['type'] == 'LVE01':
                 DaysOfApproved = displayLeaveHistoryHdr[0]['taken']
                 DaysOfPending = displayLeaveHistoryHdr[0]['pending']
