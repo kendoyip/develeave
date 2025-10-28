@@ -20,7 +20,7 @@ MarkupSafe==1.1.1
 mongoengine==0.23.1
 msal==1.11.0
 numpy==1.20.0
-Office365-REST-Python-Client==2.5.13
+Office365-REST-Python-Client==2.3.9
 openpyxl==3.0.7
 pandas==1.4.3
 Pillow==8.4.0
