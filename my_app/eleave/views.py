@@ -2170,7 +2170,7 @@ def applyLeave (psInput):
                     return ({"pass": False, "error_message" : "Invalid approver status, please contact HR for confirmation", "result": None,  "Status_code": 509})
 
 
-        ################################################### Regular Leave checking ###################################################
+        ################################################### Entitlement Leave checking ###################################################
 
         if list(leaveTypes.find({'leave_type_id': type}))[0]['other_leave'] is False:
 
@@ -2195,11 +2195,17 @@ def applyLeave (psInput):
             if type == "LVE04" or type == "LVE05":
                 max_sl_days = list(leaveGroups.find({'groupID': list(leaveTypes.find({'leave_type_id': type}))[0]['leave_group']}))[0]['max_applied_days']
                 #allslworkday = float(len(getAllLeave(racf, year, type, True))) * 0.5 + float(len(allApplying)) * 0.5
-                allslworkday = float(len(getAllLeave(racf, year, ["LVE04", "LVE05"], False))) * 0.5
-                if allslworkday >= max_sl_days:
-                    warnings = "Reminder:  Total Full Paid Sick Leave taken has already reached 7 days which is the maximum cap of current leave calendar year (included below leave application)"
+                allslworkday = float(len(getAllLeave(racf, year, ["LVE04", "LVE05"], False))) * 0.5 + float(len(allApplying)) * 0.5
+                
+                if allslworkday > max_sl_days:
+                    # For India office, cannot be passed
+                    if office == "DEL":
+                        return ({"pass": False, "error_message" : "Your sick leave entitlement has been fully used. Please apply for Annual Leave / Casual Leave / No Pay Leave for further processing.", "result": None,  "Status_code": 513})
+                    # For other office, just display the warning
+                    else:
+                        warnings = "Reminder:  Total Full Paid Sick Leave taken has already reached 7 days which is the maximum cap of current leave calendar year (included below leave application)"
             
-            # No pay leave
+            # No pay leaveth
             if type == "LVE06":
                 entitled = (getYearEntitlement(year, getStaffRecord(racf), "LVE01") + getYearCarryForward(year, getStaffRecord(racf), "LVE01"))
                 allworkday = float(len(getAllLeave(racf, year, ["LVE01"], False))) * 0.5
