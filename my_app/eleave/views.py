@@ -2202,8 +2202,8 @@ def applyLeave (psInput):
                     if office == "DEL":
                         return ({"pass": False, "error_message" : "Your sick leave entitlement has been fully used. Please apply for Annual Leave / Casual Leave / No Pay Leave for further processing.", "result": None,  "Status_code": 513})
                     # For other office, just display the warning
-                    else:
-                        warnings = "Reminder:  Total Full Paid Sick Leave taken has already reached 7 days which is the maximum cap of current leave calendar year (included below leave application)"
+                    # else:
+                    #     warnings = "Reminder:  Total Full Paid Sick Leave taken has already reached 7 days which is the maximum cap of current leave calendar year (included below leave application)"
             
             # No pay leaveth
             if type == "LVE06":
