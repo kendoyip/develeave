@@ -450,8 +450,8 @@ def getYearCarryForward(Year, StaffRecord, Type):
     for rec in StaffRecord['entitlement']:
         if int(rec['year']) == int(Year) and (Type == "LVE01"):
             return float(rec['carry_forward'])
-        else:
-            return 0
+    
+    return 0
 
 # get leave year period
 # parameter:
