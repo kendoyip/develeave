@@ -1157,6 +1157,11 @@ def geticalFile(organizer, title, content, startDate, startTime, endDate, endTim
         mintues1 = 30
         hour2 = 17
         mintues2 = 30
+    elif startTime == "PM" and endTime == "AM": 
+        hour1 = 13
+        mintues1 = 30
+        hour2 = 13
+        mintues2 = 30
 
     day1 = datetime.strptime(startDate, '%m/%d/%Y').day
     month1 = datetime.strptime(startDate, '%m/%d/%Y').month
