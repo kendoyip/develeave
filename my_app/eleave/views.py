@@ -3205,7 +3205,7 @@ def listPartnersLeave(psInput):
     for rec in staffRecord:
         if len(rec["staff"]["partners"]) > 0:
             partnerslist = str(rec["staff"]["partners"]).replace(" ", "").split(";")
-            partners_set.update(partnerslist)
+            partners_set.update(p for p in partnerslist if p)
 
     partnersLeaveList = []
     if partners_set:
