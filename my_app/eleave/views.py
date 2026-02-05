@@ -21,11 +21,9 @@ import gridfs
 import mimetypes
 import calendar
 import smtplib
-import socket
 import json
 import os
 import re
-import operator
 import base64
 from dotenv import load_dotenv
 load_dotenv()
@@ -3166,238 +3164,24 @@ def apiPrintApply():
     )
 
 
-# def listPartnersLeave(psInput):
-
-#     getLeaveTypes()
-
-#     psUser = psInput.get("racf", "")
-
-#     # Get Year
-#     try:
-#         years = (json.loads(current_app.config['YEARS'])).get('year')
-#     except:
-#         years_str = os.environ['YEARS']      
-#         years = eval(years_str)
-#         years = pd.DataFrame(data=years)
-#         years = years['year'].tolist()
-
-#     # Get date
-#     date_input = datetime.strptime(psInput['localTime'], '%a %b %d %Y')
-
-#     staffRecord = getStaffRecord(psUser)
-#     if not isinstance(staffRecord, dict):
-#         return ({"pass": False, "error_message" : "Staff Record Not Exist", "result": None, "Status_code": 504}) 
-
-#     if len(psUser) == 0:
-#         return ({"pass": False, "error_message" : "Incorrect parameters", "result": None, "Status_code": 505})
-
-#     partnersLeave = [ ]
-#     staffRecord = list(eleaveDtl.find ( {"staff.racf" : { '$regex' : psUser, '$options' : "i"} , "staff.status": { '$regex': "ACTIVE", '$options': "i"} } ) )
-#     partnersLeaveList = [ ]
-#     for rec in staffRecord:
-#         if len(rec["staff"]["partners"]) > 0 :
-#             partnerslist = str(rec["staff"]["partners"]).replace(" ","")
-#             partnerslist = partnerslist.split(";")
-#             for partners in partnerslist:
-#                 partnersRecord = list(eleaveDtl.find ( {"staff.racf" : { '$regex' : partners, '$options' : "i"} , "staff.status": { '$regex': "ACTIVE", '$options': "i"} } ) )
-#                 for partnersrec in partnersRecord:
-#                     staff = partnersrec["staff"]["name"]
-#                     racf = partnersrec["staff"]["racf"]
-#                     office = partnersrec["staff"]["hr_office"]
-#                     dept = partnersrec["staff"]["dept"]
-#                     leaveappliedLst = list(filter(lambda r: (r["applicationStatus"] == df['gcStatusApproved'][0] or r["applicationStatus"] == df['gcStatusPending'][0]), partnersrec["leave_record"]))
-#                     for record in leaveappliedLst:
-#                         leaveDetailsLst = [ ]
-#                         for details in record["details"]:
-#                             for period in details["period"]:
-#                                 if (((datetime.strptime(period["ldate"],'%Y-%m-%d').date() - date_input.date()).days) >= 0) and (((datetime.strptime(period["ldate"],'%Y-%m-%d').date() - date_input.date()).days) <= 13):
-#                                     leaveDetails = {
-#                                                     "startDate": period["ldate"],
-#                                                     "startTime": period["ltime"],
-#                                                     "endDate": period["ldate"],
-#                                                     "endTime": period["ltime"],
-#                                                     "workday": details["no_of_workday"],
-#                                                     "calendarDay": details["no_of_calendarday"]
-#                                                     }
-#                                     leaveDetailsLst.append(leaveDetails)
-#                         leaveRecord = {
-#                                         "staff": staff,
-#                                         "racf": racf,
-#                                         "office": str(partnersrec["staff"]["office"]),
-#                                         "dept": dept,
-#                                         "ref_no": getDisplayRefNo(record["ref_no"], office, racf),
-#                                         "type_id": record["type"],
-#                                         "type": list(filter(lambda r: (r["leave_type_id"].upper() == record["type"]), leaveTypeLst))[0].get("leave_type"),
-#                                         "approvalStatus": record["applicationStatus"],
-#                                         "details": leaveDetailsLst
-#                                       }
-#                         try:
-#                             startDate = leaveRecord["details"][0]['startDate']
-#                             if (((datetime.strptime((startDate),'%Y-%m-%d').date() - date_input.date()).days) >= 0) and (((datetime.strptime((startDate),'%Y-%m-%d').date() - date_input.date()).days) <= 13):
-#                                 partnersLeaveList.append(leaveRecord)
-#                         except:
-#                             pass
-#                 partnersLeaveList = sorted(partnersLeaveList, key=lambda d: (d["approvalStatus"], d["staff"], d["racf"], d["ref_no"])) 
-#         partnersLeave.append(partnersLeaveList)
-    
-
-#     # Re-structure
-#     final_result = [ ]
-#     for index, rec in enumerate(partnersLeave[0]):
-#         final_result.append(rec)
-
-#     ### start preparing frontend presentation 
-
-#     # Check whether there are any partners to show.  If empty, return nothing     
-#     if final_result == []:
-#        return ({"pass": True, "error_message" : None, "result": [], "status_code": 200}) 
-
-#     ##print('final_result',  final_result)        
-        
-#     weekday= ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
-
-#     # Build a distint staff list of staff, racf and office for partners with their respective office.
-#     df2 = pd.DataFrame(final_result)        
-#     staffList = df2.groupby(['staff','racf','office','dept']).apply(list).reset_index().to_dict('records')  
-
-
-#     # Loop the staff (partners) list for each staff and put each staff's presentation into fortnight_all
-#     # the presentation includes 4 rows - Day of Month, Day of Week, AM and PM for 14 days 
-
-#     fortnight_all = []        
-
-#     # build holidays based for all office  
-#     query = { "_id":0, "Office":1, "Date":1, "Time":1, "Remark":1}           
-#     query_filter = {'$and':  [  {'Date' : { '$gte' : str(date_input)[0:10]  }},     
-#                     {'Date' : { '$lte' : str(date_input + timedelta(days=13))[0:10] + "PM" } }
-#                      ] }                    
-#     holiday_all = list(holidays.find(query_filter, query))    ## holidays     
-
-#     for staff in staffList:       
-
-#         individual_result =  list(filter(lambda x: (x["racf"] == staff['racf']), final_result) )
-            
-#         # step 1 - build the initial fortnight template 
-#         fortnight = []
-#         for x in range(14):            
-#             entry = { "datetime": str(date_input + timedelta(days=x))[0:10] + "AM"}
-#             fortnight.append(entry)      
-#             entry = { "datetime": str(date_input + timedelta(days=x))[0:10] + "PM"}
-#             fortnight.append(entry)             
-        
-#         # step 2 - build holidays based on the staff's office          
-#         holidayList=  list(filter(lambda x: (x["Office"] == staff['office']), holiday_all) )
-        
-#         # step 3 - fill the fortnight with holidays and weekend first. 
-
-#         offdayList = []
-#         for rec in holidayList:                            
-#             try: 
-#                 remark = rec['Remark']             
-#             except:
-#                 remark = ""                    
-            
-#             offdayList.append({ "datetime" : rec['Date'] + rec['Time'], "remark" : remark})
-                
-#         for rec in fortnight:            
-#             weekOfDay = parser.parse(rec["datetime"][0:10]).weekday() + 1 
-#             rec['status'] = ''
-#             rec['remark'] = ''
-#             if weekOfDay in [6, 7]:  ## Sat or Sun                                    
-#                rec['leaveType'] = 'weekend'                
-#             else:
-#                found =  list(filter(lambda x: (x["datetime"] == rec["datetime"]), offdayList)) 
-#                if len(found) > 0:
-#                   rec['leaveType'] = 'holiday' 
-#                   rec['remark'] = found[0]['remark']              
-#                else:
-#                  rec['leaveType'] = ''                
-            
-    
-#         # step 4 - fill each of the 28 slot (AM + PM for 14 days) with applied leaves if any from the staff 
-#         for rec in individual_result:                         
-#             for rec2 in rec['details']:
-#                 startDateTime = rec2['startDate'] + ("AM" if rec2['startTime']=="Full Day" else rec2['startTime']) 
-#                 endDateTimeTime = rec2['endDate'] + ("PM" if rec2['endTime']=="Full Day" else rec2['endTime'])
-#                 for rec3 in fortnight:
-#                     if rec3["datetime"] >= startDateTime and rec3["datetime"] <= endDateTimeTime and rec3["leaveType"] == '':
-#                         rec3['status'] = rec['approvalStatus']
-#                         rec3['leaveType'] = rec['type_id']                   
-
-#         ##print('fortnight ', fortnight)                                  
-                        
-#         # step 5 - build the presentation includes 4 rows - Day of Month, Day of Week, AM and PM for 14 days  
-#         partnersDOM = []        
-#         partnersDOW = []        
-#         partnersAM = []        
-#         partnersPM = []        
-#         partnersAMstatus = []        
-#         partnersPMstatus = []        
-#         partnersAMholiday= []
-#         partnersPMholiday= []
-
-#         for rec in fortnight:  
-#             if rec['datetime'][10:12] == "AM":
-#                    partnersDOM.append(rec['datetime'][8:10])       ## Day of Month 
-#                    #partnersDOW.append(  dow[ parser.parse(rec["datetime"][0:10]).weekday() ] )      # Day of Week
-#                    partnersDOW.append(  weekday[ parser.parse(rec["datetime"][0:10]).weekday()]  )      # Day of Week
-#                    partnersAM.append(  rec["leaveType"])   # AM Leave Type
-#                    partnersAMstatus.append(  rec["status"])   # Approval Status
-#                    partnersAMholiday.append(  rec["remark"])   # Holiday remark
-#             elif rec['datetime'][10:12] == "PM":
-#                    partnersPM.append(  rec["leaveType"])   # PM Leave Type
-#                    partnersPMstatus.append(  rec["status"])   # Approval Status
-#                    partnersPMholiday.append(  rec["remark"])   # Holiday remark        
-
-#         partners = { 
-#             'partnersDOM' : partnersDOM,
-#             'partnersDOW' : partnersDOW,  
-#             'partnersAM'  : partnersAM,
-#             'partnersAMstatus' : partnersAMstatus, 
-#             'partnersPM': partnersPM,         
-#             'partnersPMstatus': partnersPMstatus,
-#             'partnersAMholiday' : partnersAMholiday,
-#             'partnersPMholiday' : partnersPMholiday
-#         }             
-
-#         # step 6 - package and send the list of staff and their presentation to React client 
-
-#         fortnight_all.append({
-#             'staff' : staff['staff'],
-#             'dept'  : staff['dept'],
-#             'partners' : partners 
-#         })                                               
-
-#     return ({"pass": True, "error_message" : None, "result": fortnight_all, "status_code": 200}) 
-
-
 def listPartnersLeave(psInput):
-    getLeaveTypes() # Assuming this sets global leaveTypeLst or similar
+
+    getLeaveTypes()
 
     psUser = psInput.get("racf", "")
 
-    # Get Year configuration
+    # Get Year
     try:
         years = (json.loads(current_app.config['YEARS'])).get('year')
     except:
-        years_str = os.environ.get('YEARS', "[]")      
-        try:
-            years = eval(years_str)
-            if isinstance(years, list):
-                years = pd.DataFrame(data=years)
-                years = years['year'].tolist()
-            else:
-                years = []
-        except:
-            years = []
+        years_str = os.environ['YEARS']      
+        years = eval(years_str)
+        years = pd.DataFrame(data=years)
+        years = years['year'].tolist()
 
     # Get date
-    try:
-        date_input = datetime.strptime(psInput['localTime'], '%a %b %d %Y')
-    except ValueError:
-         return ({"pass": False, "error_message" : "Invalid date format", "result": None, "Status_code": 505})
+    date_input = datetime.strptime(psInput['localTime'], '%a %b %d %Y')
 
-    # Basic Validation
     staffRecord = getStaffRecord(psUser)
     if not isinstance(staffRecord, dict):
         return ({"pass": False, "error_message" : "Staff Record Not Exist", "result": None, "Status_code": 504}) 
@@ -3405,232 +3189,214 @@ def listPartnersLeave(psInput):
     if len(psUser) == 0:
         return ({"pass": False, "error_message" : "Incorrect parameters", "result": None, "Status_code": 505})
 
-    # 1. Identify Target Partners (Data Collection Phase)
-    # Fetch the current user to get their partners list
-    currentUserQuery = { 
-        "staff.racf" : { '$regex' : psUser, '$options' : "i"} , 
-        "staff.status": { '$regex': "ACTIVE", '$options': "i"} 
-    }
-    
-    currentUserRecords = list(eleaveDtl.find(currentUserQuery))
-    
-    target_partner_racfs = []
-    
-    for rec in currentUserRecords:
-        partners_str = rec.get("staff", {}).get("partners", "")
-        if partners_str and len(partners_str) > 0:
-            # Clean string: remove spaces, split by semi-colon
-            p_list = str(partners_str).replace(" ", "").split(";")
-            # Filter out empty strings
-            p_list = [p for p in p_list if p]
-            target_partner_racfs.extend(p_list)
-    
-    # Remove duplicates
-    target_partner_racfs = list(set(target_partner_racfs))
-    
+    # Precompute constants
+    date_input_date = date_input.date()
+    date_input_str = date_input.strftime('%Y-%m-%d')
+    end_date = date_input + timedelta(days=13)
+    end_date_str = end_date.strftime('%Y-%m-%d')
+
+    approved = df['gcStatusApproved'][0]
+    pending = df['gcStatusPending'][0]
+    leaveTypeDict = {r["leave_type_id"].upper(): r["leave_type"] for r in leaveTypeLst}
+
+    partnersLeave = []
+    staffRecord = list(eleaveDtl.find({"staff.racf": {'$regex': psUser, '$options': "i"}, "staff.status": {'$regex': "ACTIVE", '$options': "i"}}))
+    partners_set = set()
+    for rec in staffRecord:
+        if len(rec["staff"]["partners"]) > 0:
+            partnerslist = str(rec["staff"]["partners"]).replace(" ", "").split(";")
+            partners_set.update(partnerslist)
+
     partnersLeaveList = []
+    if partners_set:
+        or_clauses = [{"staff.racf": {'$regex': p, '$options': "i"}} for p in partners_set]
+        partnersRecords = list(eleaveDtl.find({"$or": or_clauses, "staff.status": {'$regex': "ACTIVE", '$options': "i"}}))
 
-    # 2. Bulk Fetch (Optimization Phase)
-    # If we have partners, fetch them all in ONE query using $in
-    if target_partner_racfs:
-        # Create case-insensitive regex for each RACF to match original logic
-        # (Optimization note: If RACFs are stored consistently, simple string match is faster)
-        racf_regex_list = [re.compile(f"^{re.escape(r)}$", re.IGNORECASE) for r in target_partner_racfs]
-        
-        partnersQuery = {
-            "staff.racf": { "$in": racf_regex_list },
-            "staff.status": { '$regex': "ACTIVE", '$options': "i"}
-        }
-        
-        # EXECUTE SINGLE QUERY
-        all_partners_records = list(eleaveDtl.find(partnersQuery))
-        
-        # 3. Process Data (Transformation Phase)
-        for partnersrec in all_partners_records:
-            staff_info = partnersrec.get("staff", {})
-            staff_name = staff_info.get("name", "")
-            racf = staff_info.get("racf", "")
-            office = staff_info.get("hr_office", "")
-            dept = staff_info.get("dept", "")
-            
-            # Filter relevant leave records (Approved or Pending)
-            raw_leave_records = partnersrec.get("leave_record", [])
-            valid_statuses = [df['gcStatusApproved'][0], df['gcStatusPending'][0]]
-            
-            leaveappliedLst = [r for r in raw_leave_records if r.get("applicationStatus") in valid_statuses]
-            
-            for record in leaveappliedLst:
+        for partnersrec in partnersRecords:
+            staff = partnersrec["staff"]["name"]
+            racf = partnersrec["staff"]["racf"]
+            office = partnersrec["staff"]["hr_office"]
+            dept = partnersrec["staff"]["dept"]
+            for record in partnersrec["leave_record"]:
+                if record["applicationStatus"] != approved and record["applicationStatus"] != pending:
+                    continue
                 leaveDetailsLst = []
-                
-                for details in record.get("details", []):
-                    for period in details.get("period", []):
-                        try:
-                            period_date = datetime.strptime(period["ldate"], '%Y-%m-%d').date()
-                            diff_days = (period_date - date_input.date()).days
-                            
-                            # Check if date is within 0 to 13 days range
-                            if 0 <= diff_days <= 13:
-                                leaveDetails = {
-                                    "startDate": period["ldate"],
-                                    "startTime": period["ltime"],
-                                    "endDate": period["ldate"],
-                                    "endTime": period["ltime"],
-                                    "workday": details.get("no_of_workday"),
-                                    "calendarDay": details.get("no_of_calendarday")
-                                }
-                                leaveDetailsLst.append(leaveDetails)
-                        except (ValueError, KeyError):
-                            continue
-
-                # Prepare the final leave record object
+                for details in record["details"]:
+                    for period in details["period"]:
+                        ldate_date = datetime.strptime(period["ldate"], '%Y-%m-%d').date()
+                        days_diff = (ldate_date - date_input_date).days
+                        if 0 <= days_diff <= 13:
+                            leaveDetails = {
+                                "startDate": period["ldate"],
+                                "startTime": period["ltime"],
+                                "endDate": period["ldate"],
+                                "endTime": period["ltime"],
+                                "workday": details["no_of_workday"],
+                                "calendarDay": details["no_of_calendarday"]
+                            }
+                            leaveDetailsLst.append(leaveDetails)
                 if leaveDetailsLst:
-                    # Resolve Leave Type Name
-                    leave_type_name = ""
-                    try:
-                        filtered_types = list(filter(lambda r: (r["leave_type_id"].upper() == record["type"]), leaveTypeLst))
-                        if filtered_types:
-                            leave_type_name = filtered_types[0].get("leave_type")
-                    except:
-                        pass
-
                     leaveRecord = {
-                        "staff": staff_name,
+                        "staff": staff,
                         "racf": racf,
-                        "office": str(staff_info.get("office", "")),
+                        "office": str(partnersrec["staff"]["office"]),
                         "dept": dept,
-                        "ref_no": getDisplayRefNo(record.get("ref_no"), office, racf),
-                        "type_id": record.get("type"),
-                        "type": leave_type_name,
-                        "approvalStatus": record.get("applicationStatus"),
+                        "ref_no": getDisplayRefNo(record["ref_no"], office, racf),
+                        "type_id": record["type"],
+                        "type": leaveTypeDict.get(record["type"], ""),
+                        "approvalStatus": record["applicationStatus"],
                         "details": leaveDetailsLst
                     }
-                    
-                    partnersLeaveList.append(leaveRecord)
+                    startDate = leaveDetailsLst[0]['startDate']
+                    days_diff = (datetime.strptime(startDate, '%Y-%m-%d').date() - date_input_date).days
+                    if 0 <= days_diff <= 13:
+                        partnersLeaveList.append(leaveRecord)
 
-    # Sort results
-    partnersLeaveList = sorted(partnersLeaveList, key=lambda d: (d.get("approvalStatus", ""), d.get("staff", ""), d.get("racf", ""), d.get("ref_no", "")))
-    
-    final_result = partnersLeaveList
+    partnersLeaveList = sorted(partnersLeaveList, key=lambda d: (d["approvalStatus"], d["staff"], d["racf"], d["ref_no"]))
+    partnersLeave.append(partnersLeaveList)
 
-    # --- Frontend Presentation Preparation ---
+    # Re-structure
+    final_result = []
+    for index, rec in enumerate(partnersLeave[0]):
+        final_result.append(rec)
 
-    if not final_result:
+    ### start preparing frontend presentation 
+
+    # Check whether there are any partners to show.  If empty, return nothing     
+    if final_result == []:
        return ({"pass": True, "error_message" : None, "result": [], "status_code": 200}) 
 
-    weekday_names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+    ##print('final_result',  final_result)        
+        
+    weekday= ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 
-    # Group distinct staff
-    df2 = pd.DataFrame(final_result)        
-    staffList = df2.groupby(['staff','racf','office','dept']).apply(lambda x: x.to_dict('records')).reset_index(name='data').to_dict('records')
+    # Build a distinct staff list of staff, racf and office for partners with their respective office.
+    unique_staff = {}
+    for rec in final_result:
+        key = (rec['staff'], rec['racf'], rec['office'], rec['dept'])
+        if key not in unique_staff:
+            unique_staff[key] = {'staff': rec['staff'], 'racf': rec['racf'], 'office': rec['office'], 'dept': rec['dept']}
+    staffList = list(unique_staff.values())
+
+    # Loop the staff (partners) list for each staff and put each staff's presentation into fortnight_all
+    # the presentation includes 4 rows - Day of Month, Day of Week, AM and PM for 14 days 
 
     fortnight_all = []        
 
-    # Fetch Holidays for the range
-    query_proj = { "_id":0, "Office":1, "Date":1, "Time":1, "Remark":1}          
-    start_date_str = str(date_input)[0:10]
-    end_date_str = str(date_input + timedelta(days=13))[0:10]
-    
-    query_filter = {
-        '$and': [ 
-            {'Date' : { '$gte' : start_date_str }},     
-            {'Date' : { '$lte' : end_date_str }}
-        ] 
-    }                    
-    holiday_all = list(holidays.find(query_filter, query_proj))    
+    # build holidays based for all office  
+    query = { "_id":0, "Office":1, "Date":1, "Time":1, "Remark":1}           
+    query_filter = {'$and':  [  {'Date' : { '$gte' : date_input_str  }},     
+                    {'Date' : { '$lte' : end_date_str + "PM" } }
+                     ] }                    
+    holiday_all = list(holidays.find(query_filter, query))    ## holidays     
 
-    for group in staffList:       
-        staff_racf = group['racf']
-        staff_office = group['office']
-        staff_name = group['staff']
-        staff_dept = group['dept']
+    # Group holidays by office
+    from collections import defaultdict
+    office_to_holidays = defaultdict(list)
+    for h in holiday_all:
+        office_to_holidays[h['Office']].append(h)
 
-        # Get records specific to this staff
-        individual_result = [x for x in final_result if x["racf"] == staff_racf]
+    for staff in staffList:       
+
+        individual_result = [x for x in final_result if x["racf"] == staff['racf']]
             
-        # Step 1: Build Fortnight Template
+        # step 1 - build the initial fortnight template 
         fortnight = []
-        for x in range(14): 
-            current_dt = date_input + timedelta(days=x)
-            date_str = str(current_dt)[0:10]
-            fortnight.append({ "datetime": date_str + "AM" })      
-            fortnight.append({ "datetime": date_str + "PM" })             
+        fortnight_dict = {}
+        for x in range(14):
+            day_date = date_input + timedelta(days=x)
+            day_str = day_date.strftime('%Y-%m-%d')
+            for time_slot in ['AM', 'PM']:
+                dt = day_str + time_slot
+                entry = {"datetime": dt}
+                fortnight.append(entry)
+                fortnight_dict[dt] = entry
         
-        # Step 2: Filter holidays for this staff's office         
-        holidayList = [x for x in holiday_all if x["Office"] == staff_office]
+        # step 2 - build holidays based on the staff's office          
+        holidayList = office_to_holidays[staff['office']]
         
-        # Step 3: Mark Holidays and Weekends
-        # Create a lookup for holidays for O(1) access
-        holiday_map = { (h['Date'] + h['Time']): h.get('Remark', "") for h in holidayList }
-
-        for rec in fortnight:            
-            dt_obj = parser.parse(rec["datetime"][0:10])
-            weekOfDay = dt_obj.weekday() + 1 
-            
+        # step 3 - fill the fortnight with holidays and weekend first. 
+        for rec in fortnight:
+            parse_date = parser.parse(rec["datetime"][0:10])
+            weekOfDay = parse_date.weekday() + 1
             rec['status'] = ''
             rec['remark'] = ''
-            
-            if weekOfDay in [6, 7]:  # Sat or Sun                                        
-               rec['leaveType'] = 'weekend'                
+            if weekOfDay in [6, 7]:
+                rec['leaveType'] = 'weekend'
             else:
-               # Check holiday map
-               key = rec["datetime"]
-               if key in holiday_map:
-                   rec['leaveType'] = 'holiday' 
-                   rec['remark'] = holiday_map[key]              
-               else:
-                   rec['leaveType'] = ''                
-            
+                rec['leaveType'] = ''
+
+        for rec in holidayList:                            
+            remark = rec.get('Remark', "")                    
+            dt = rec['Date'] + rec['Time']
+            if dt in fortnight_dict and fortnight_dict[dt]['leaveType'] == '':
+                fortnight_dict[dt]['leaveType'] = 'holiday'
+                fortnight_dict[dt]['remark'] = remark
+                
     
-        # Step 4: Fill Slots with Applied Leaves
+        # step 4 - fill each of the 28 slot (AM + PM for 14 days) with applied leaves if any from the staff 
         for rec in individual_result:                         
             for rec2 in rec['details']:
-                # Determine precise start/end strings for comparison
-                start_suffix = "AM" if rec2['startTime'] == "Full Day" else rec2['startTime']
-                end_suffix = "PM" if rec2['endTime'] == "Full Day" else rec2['endTime']
-                
-                startDateTime = rec2['startDate'] + start_suffix
-                endDateTimeTime = rec2['endDate'] + end_suffix
-                
-                for slot in fortnight:
-                    # Only fill if currently empty (not holiday/weekend)
-                    if slot["leaveType"] == '':
-                        # String comparison works for YYYY-MM-DD format
-                        if slot["datetime"] >= startDateTime and slot["datetime"] <= endDateTimeTime:
-                            slot['status'] = rec['approvalStatus']
-                            slot['leaveType'] = rec['type_id']                   
+                date_str = rec2['startDate']
+                start_time = rec2['startTime']
+                status = rec['approvalStatus']
+                type_id = rec['type_id']
+                if start_time == "Full Day":
+                    for time in ["AM", "PM"]:
+                        dt = date_str + time
+                        if dt in fortnight_dict and fortnight_dict[dt]["leaveType"] == '':
+                            fortnight_dict[dt]['status'] = status
+                            fortnight_dict[dt]['leaveType'] = type_id
+                else:
+                    dt = date_str + start_time
+                    if dt in fortnight_dict and fortnight_dict[dt]["leaveType"] == '':
+                        fortnight_dict[dt]['status'] = status
+                        fortnight_dict[dt]['leaveType'] = type_id                   
 
-        # Step 5: Format for Frontend (Arrays)
-        partners = { 
-            'partnersDOM': [], 'partnersDOW': [], 'partnersAM': [],
-            'partnersAMstatus': [], 'partnersPM': [], 'partnersPMstatus': [],
-            'partnersAMholiday': [], 'partnersPMholiday': []
-        }
+        ##print('fortnight ', fortnight)                                  
+                        
+        # step 5 - build the presentation includes 4 rows - Day of Month, Day of Week, AM and PM for 14 days  
+        partnersDOM = []        
+        partnersDOW = []        
+        partnersAM = []        
+        partnersAMstatus = []        
+        partnersPM = []        
+        partnersPMstatus = []        
+        partnersAMholiday= []
+        partnersPMholiday= []
 
         for rec in fortnight:  
-            is_am = rec['datetime'].endswith("AM")
-            dt_obj = parser.parse(rec["datetime"][0:10])
-            
-            if is_am:
-                partners['partnersDOM'].append(rec['datetime'][8:10])
-                partners['partnersDOW'].append(weekday_names[dt_obj.weekday()])
-                partners['partnersAM'].append(rec["leaveType"])
-                partners['partnersAMstatus'].append(rec["status"])
-                partners['partnersAMholiday'].append(rec["remark"])
-            else:
-                partners['partnersPM'].append(rec["leaveType"])
-                partners['partnersPMstatus'].append(rec["status"])
-                partners['partnersPMholiday'].append(rec["remark"])        
+            if rec['datetime'][10:12] == "AM":
+                   partnersDOM.append(rec['datetime'][8:10])       ## Day of Month 
+                   partnersDOW.append(weekday[parser.parse(rec["datetime"][0:10]).weekday()])      # Day of Week
+                   partnersAM.append(rec["leaveType"])   # AM Leave Type
+                   partnersAMstatus.append(rec["status"])   # Approval Status
+                   partnersAMholiday.append(rec["remark"])   # Holiday remark
+            elif rec['datetime'][10:12] == "PM":
+                   partnersPM.append(rec["leaveType"])   # PM Leave Type
+                   partnersPMstatus.append(rec["status"])   # Approval Status
+                   partnersPMholiday.append(rec["remark"])   # Holiday remark        
 
-        # Step 6: Package Result
+        partners = { 
+            'partnersDOM' : partnersDOM,
+            'partnersDOW' : partnersDOW,  
+            'partnersAM'  : partnersAM,
+            'partnersAMstatus' : partnersAMstatus, 
+            'partnersPM': partnersPM,         
+            'partnersPMstatus': partnersPMstatus,
+            'partnersAMholiday' : partnersAMholiday,
+            'partnersPMholiday' : partnersPMholiday
+        }             
+
+        # step 6 - package and send the list of staff and their presentation to React client 
+
         fortnight_all.append({
-            'staff' : staff_name,
-            'dept'  : staff_dept,
+            'staff' : staff['staff'],
+            'dept'  : staff['dept'],
             'partners' : partners 
-        })                                      
+        })                                               
 
     return ({"pass": True, "error_message" : None, "result": fortnight_all, "status_code": 200})
-
-
 
 # Status_code 200: passed
 # Status_code 504: failed, Staff Record Not Exist
