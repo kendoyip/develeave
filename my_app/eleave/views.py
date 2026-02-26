@@ -1769,7 +1769,7 @@ def checkConsecutive(racf, year, apply_h, type, office):
     checking_list = [ ]
     count = 0
     sl_count = 0 # need to return the day count requested by HR for displaying warning email and message in client
-    no_cert_count = 0
+    no_pay_count = 0
     casual_count = 0
 
     # Get information from leave_groups e.g. maximum applied days for sick leave/ maximum consective days for annual
@@ -1799,9 +1799,11 @@ def checkConsecutive(racf, year, apply_h, type, office):
                 return ({"consecutive": True, "error_message" : "Reminder: Maximum vacation taken at any one time is 2 WEEKS including Public Holidays, Saturdays and Sundays", "result": None,  "Status_code": 506, "no_of_consective": sl_count})
 
             # Special Checking for India: Cannot be consecutive 4
-            if office == "DEL" and type == "LVE02": 
+            if office == "DEL": 
 
-                if r['Applied'] == "LVE02" or r['Apply'] == "LVE02":
+                if r['Applied'] == "" and r['Apply'] == "":
+                    casual_count = 0
+                elif r['Applied'] == "LVE02" or r['Apply'] == "LVE02":
                     casual_count += 0.5
 
                 if casual_count > 3:
@@ -1809,25 +1811,33 @@ def checkConsecutive(racf, year, apply_h, type, office):
 
             # No pay leave cannot exceed 5 working days
             if type == "LVE06":
-                if (r['Day of Week'] == "Saturday" or r['Day of Week'] == "Sunday") or (r['Applied'] != "" and 'LVE' not in r['Applied']):
-                    count -= 0.5
-                if count > 5:
+
+                if r['Applied'] == "" and r['Apply'] == "":
+                    no_pay_count = 0
+                elif r['Applied'] == "LVE06" or r['Apply'] == "LVE06":
+                    no_pay_count += 0.5
+
+                if no_pay_count > 5:
                     return ({"consecutive": True, "error_message" : "No pay Leave cannot exceed 5 working days. Please contact local HR for assistance if required", "result": None,  "Status_code": 506, "no_of_consective": sl_count})
 
             # Consider consecutive weekends only if a leave has been applied before
             if r['Day of Week'] == "Saturday" and rdf.iloc[i-1]['Applied'] == "" and rdf.iloc[i-1]['Apply'] == "":
                 count = 0
                 casual_count = 0
+                no_pay_count = 0
             if (r['Day of Week'] == "Saturday" or r['Day of Week'] == "Sunday") and count <= 0.5:
                 count = 0
                 casual_count = 0
+                no_pay_count = 0
             # Consider public holidays only if a leave has been applied before
             if r['Applied'] != "" and 'LVE' not in r['Applied'] and rdf.iloc[i-1]['Applied'] == "" and rdf.iloc[i-1]['Apply'] == "":
                 count = 0
                 casual_count = 0
+                no_pay_count = 0
             if r['Applied'] != "" and 'LVE' not in r['Applied'] and count <= 0.5:
                 count = 0
                 casual_count = 0
+                no_pay_count = 0
 
         # Sick Leave with medical cert
         elif type == "LVE04":
@@ -1872,14 +1882,13 @@ def checkConsecutive(racf, year, apply_h, type, office):
         # Break counter if applied & apply both blank
         if r['Applied'] == "" and r['Apply'] == "":
             count = 0
-            no_cert_count = 0
             
         # reset checking list if the chain is broken
         if count == 0:
             checking_list = [ ]
         
         # For developing checking
-        # print (f"{r['Date']}/{r['Time']}/{r['Applied']}/{r['Apply']}, count : {count}, causal count : {casual_count}")
+        # print (f"{r['Date']}/{r['Time']}/{r['Applied']}/{r['Apply']}, count : {count}, no pay count : {no_pay_count}, causal count: {casual_count}")
 
     # ept = datetime.now()
     # execution_time = ept - spt
