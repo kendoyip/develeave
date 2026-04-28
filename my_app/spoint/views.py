@@ -11,7 +11,7 @@ from io import BytesIO
 ## For SharePoint 
 #########################################################################################################
 from office365.sharepoint.files.file import File
-from office365.sharepoint.files.file_creation_information import FileCreationInformation
+# from office365.sharepoint.files.file_creation_information import FileCreationInformation
 
 # from office365.sharepoint.listitems.caml.caml_query import CamlQuery  
 # from office365.runtime.http.request_options import RequestOptions
@@ -247,7 +247,7 @@ def upload_file():
 
                     if file and allowed_file(file.filename):                                
                         
-                        mimetype = file.content_type
+                        # mimetype = file.content_type
                         filename = file.filename    
                         
                         # 6/23/22 remove below as secure_filename removes non-ascii characters.
@@ -256,16 +256,11 @@ def upload_file():
                         target_folder = ctx.web.get_folder_by_server_relative_path(relative_url)                        
                         ctx.execute_query()
                         
-                        info = FileCreationInformation()                        
-                        info.content = file.read()        
-                        #enable below for control of each size of the file. 
-                        # if  len(info.content) >  1024 * 1024 * 1:    
-                        #     return f"The size of {file.filename} exceeds 2 MB limit !", 555                                                                            
-                        
-                        info.url = filename                                  
-                        info.overwrite = True         
-                     
-                        upload_file = target_folder.files.add(info)         
+                        # Read the file content
+                        file_content = file.read()
+
+                        # Pass parameters directly to .add()
+                        upload_file = target_folder.files.add(filename, file_content, True)      
                    
                         ctx.execute_query()
                         list_item = upload_file.listItemAllFields # get associated list item                                 
@@ -280,7 +275,8 @@ def upload_file():
 
                 return "OK",200
                                 
-            except Exception as e:                    
+            except Exception as e:
+                print (e)
                 return "Upload Error", 507
 
 

@@ -95,7 +95,7 @@ def getUserList():
     col = eleaveDtl 
     results = col.find(query_filter, query)    ## eleave_dtl
     for result in results:   
-        userList.append({ 'racf': result['staff']['racf'], 'name' : result['staff']['name']})
+        userList.append({ 'racf': result['staff']['racf'], 'name' : result['staff']['name'], 'office': result['staff']['office']})
     
 
     try:
@@ -319,8 +319,16 @@ def getLeaveGroups():
     leaveGroupLst = list(leaveGroups.find({}))
 
 def getAllOffice():
-    #allOffice = ['HKG', 'REG', 'TPE', 'DEL', 'FLR', 'CHN']
+    # allOffice = ['HKG', 'REG', 'TPE', 'DEL', 'FLR', 'CHN']
     allOffice = eleaveDtl.distinct('staff.office')
+
+    # NY for approval only, drop NY in the list
+    if 'NY' in allOffice:
+        allOffice.remove('NY')
+
+    # CHN drop as well
+    if 'CHN' in allOffice:
+        allOffice.remove('CHN')
 
     return allOffice
 
@@ -351,11 +359,11 @@ def specialLeaveRefNo(ofc, year):
     elif ofc == "DEL":
         code = "IN"
 
-    elif ofc == "REG":
-        code = "RG"
+    # elif ofc == "REG":
+    #     code = "RG"
 
-    elif ofc == "CHN":
-        code = "CN"
+    # elif ofc == "CHN":
+    #     code = "CN"
 
     elif ofc == "FLR":
         code = "IT"
@@ -1330,7 +1338,7 @@ def sendEmail(psRecord, psRefNo, otherRefNo, psAction, psRequest, finalapprover 
 
 
     leaveContent = list(filter(lambda r: (r["ref_no"] == int(psRefNo)), psRecord["leave_record"]))
-    print (psRecord["leave_record"])
+    # print (psRecord["leave_record"])
     leavePeriod = ""
     for leaveitem in leaveContent[0]["details"]:
         start_date = datetime.strptime(str(leaveitem.get("start_date")), '%Y-%m-%d').strftime('%m/%d/%Y')
@@ -3555,10 +3563,10 @@ def submitRequest(psInput):
 
     # Validation
 
-
     # duplicated approval#
     history_h = list(otherLeaves.find({"ref_no": psInput['ref_no']}))
     if len(history_h) > 0:
+        print (history_h)
         return ({"pass": False, "error_message" : "Error on duplicated approval #", "result": [], "status_code": 901}) 
     
     if psInput['office'] == "":
@@ -3630,14 +3638,27 @@ def submitRequest(psInput):
     reference_no_inEmail = str(psInput['ref_no'])[0:2] + "/" + str(psInput['ref_no'])[2:6] + "/" + str(psInput['ref_no'])[6:]
 
 
+    # Date presentation in email
+    period_start = psInput['period_start'].replace('-', '/').split('/')
+    period_start = f"{period_start[1]}/{period_start[2]}/{period_start[0]}"
+
+    period_end = psInput['period_end'].replace('-', '/').split('/')
+    period_end = f"{period_end[1]}/{period_end[2]}/{period_end[0]}"
+
+    if psInput['ref_date']:
+        ref_date = psInput['ref_date'].replace('-', '/').split('/')
+        ref_date = f"{ref_date[1]}/{ref_date[2]}/{ref_date[0]}"
+    else:
+        ref_date = "NA"
+
     title = f"<E-LEAVE> {staff_fullname} ({staff_dept}) - Requisition for {leave_name} #APPROVED"
     message = (
         f"Dear Applicant, \n\n"
         f"Your requisition for {leave_name} is approved and details are as below.\n\n"
         f"REFERENCE NO.: {reference_no_inEmail}\n"
-        f"REQUISITION DATE: {psInput['ref_date']}\n"
+        f"REQUISITION DATE: {ref_date}\n"
         f"ENTITLED DAYS: {float(psInput['entitled_days'])} DAY(S)\n"
-        f"ALLOWED PERIOD: {psInput['period_start']} - {psInput['period_end']}\n\n"
+        f"ALLOWED PERIOD: {period_start} to {period_end}\n\n"
         f"When submitting your application, please choose the 'Others' Leave Type and Reference # indicated above from the system. "
         f"The remaining procedures will be the same as those for the prior leave request.\n\n"
         f"Should you have any queries, please contact local HR.\n\n"
