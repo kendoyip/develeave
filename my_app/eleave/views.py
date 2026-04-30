@@ -1538,6 +1538,7 @@ def sendEmail(psRecord, psRefNo, otherRefNo, psAction, psRequest, finalapprover 
                 postmarker(message, title, sendTo, sendCc, None, None)
             except:
                 localSend(message, title, sendTo, sendCc)
+
     # Send pending leave to next approver (Cancel)
     if (finalapprover > currentapprover) and (psAction == df['gcActionApprove'][0] and psRequest == df['gcActionCancel'][0]):
         sendTo = next_approver
@@ -1548,6 +1549,7 @@ def sendEmail(psRecord, psRefNo, otherRefNo, psAction, psRequest, finalapprover 
             postmarker(message, title, sendTo, sendCc, None, None)
         except:
             localSend(message, title, sendTo, sendCc)
+
     # Send pending leave to next approver (Apply)
     if (finalapprover > currentapprover) and (psAction == df['gcActionApprove'][0] and psRequest == df['gcActionApply'][0]):
         sendTo = next_approver
@@ -3703,27 +3705,60 @@ def cancelRequest(psInput):
         return ({"pass": False, "error_message" : "Cancel failed, please check the Approval #", "result": [], "status_code": 810}) 
     
 
-
 def getRefDetails(ref_no):
-
-    result = [ ]
+    result = []
     
+    # Get the special leave record from other_leaves
     record = list(otherLeaves.find({"ref_no": ref_no}))
 
     for rec in record:
-        result.append({'ref_no': rec['ref_no'],
-                       'office': rec['office'],
-                       'year': rec['year'],
-                       'racf': rec['racf'],
-                       'leave_type': rec['leave_type'],
-                       'leave_name': str(list(leaveTypes.find({'leave_type_id': rec['leave_type']}))[0]['leave_type']).title(),
-                       'entitled_days': float(rec['entitled_days']),
-                       'ref_date': rec['ref_date'],
-                       'period_start': rec['period_start'],
-                       'period_end': rec['period_end'],
-                       'accumulated': rec['accumulated'],
-                       'excluded_holidays': rec['excluded_holidays']
-                      })
+        # 1. Fetch all leave applications associated with this specific Reference Number
+        # We query eleave_dtl for records where otherRefNo matches our ref_no
+        # and ignore REJECTED or CANCELLED applications.
+        staff_record = eleaveDtl.find_one({"staff.racf": rec['racf']})
+        
+        approved_days = 0.0
+        pending_days = 0.0
+        
+        if staff_record and "leave_record" in staff_record:
+            for leave in staff_record["leave_record"]:
+                # Check if this leave application is linked to the special leave ref_no
+                if leave.get("otherRefNo") == ref_no:
+                    status_upper = leave.get("applicationStatus", "").upper()
+                    
+                    # Calculate total days in this specific application
+                    leave_days = 0.0
+                    for detail in leave.get("details", []):
+                        leave_days += float(detail.get("no_of_workday", 0))
+                    
+                    # Sort into Approved or Pending
+                    if status_upper == "APPROVED":
+                        approved_days += leave_days
+                    elif status_upper in ["PENDING", "SUBMITTED"]: 
+                        pending_days += leave_days
+
+        # 2. Calculate Balance
+        entitled = float(rec['entitled_days'])
+        days_left = entitled - approved_days - pending_days
+
+        # 3. Append to result
+        result.append({
+            'ref_no': rec['ref_no'],
+            'office': rec['office'],
+            'year': rec['year'],
+            'racf': rec['racf'],
+            'leave_type': rec['leave_type'],
+            'leave_name': str(list(leaveTypes.find({'leave_type_id': rec['leave_type']}))[0]['leave_type']).title(),
+            'entitled_days': entitled,
+            'approved_days': approved_days, # Added
+            'pending_days': pending_days,   # Added
+            'days_left': days_left,         # Added
+            'ref_date': rec['ref_date'],
+            'period_start': rec['period_start'],
+            'period_end': rec['period_end'],
+            'accumulated': rec['accumulated'],
+            'excluded_holidays': rec['excluded_holidays']
+        })
 
     return result
 
