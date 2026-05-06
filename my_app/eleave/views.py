@@ -22,8 +22,8 @@ import mimetypes
 import calendar
 import smtplib
 import json
+import requests
 import os
-import re
 import base64
 from dotenv import load_dotenv
 load_dotenv()
@@ -371,14 +371,12 @@ def specialLeaveRefNo(ofc, year):
     zerodigit = "0" * (3 - int(len(str(maxRefNo))))
     return str(f"{code}{year}{zerodigit}{maxRefNo}")
 
-# 
+
 def getAllSpecialRef(racf, super, localtime):
 
     result = [ ]
     
     record = list(otherLeaves.find({"racf": racf}))
-
-    # float(len(getAllLeave(racf, year, [type], False, otherRefNo)))
 
     for rec in record:
 
@@ -1265,10 +1263,8 @@ def postmarker(message, title, sendTo, sendCC, attachment=None, attachmentname=N
                   }
     
 
-    import json
     data = json.dumps(parameters)
 
-    import requests
     r = requests.post('https://api.postmarkapp.com/email', headers=headers, data=data)
 
     response = json.loads(r.text)
@@ -1283,7 +1279,9 @@ def localSend(message, title, sendTo, sendCC, attachment=None, attachmentname=No
 
     # subject, text body
     subject = title
-    body_plain = message
+
+    body_plain = message.decode('utf-8') if isinstance(message, bytes) else message
+
     # html body
     line_break = '\n' #used to replace line breaks with html breaks
     body_html = f'''
@@ -3793,6 +3791,7 @@ def apiGetAllSpecialRef():
         time = datetime.strptime(psInput['localTime'], '%a %b %d %Y %H:%M:%S')
 
     result = getAllSpecialRef(racf, super, time)
+    print (result)
     return jsonify(result) 
 
 
