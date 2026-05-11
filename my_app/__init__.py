@@ -27,6 +27,14 @@ env = os.environ['ENVIRONMENT']
 client = MongoClient(os.environ['MONGODB_URL'], tls=True, tlsAllowInvalidCertificates=True, tlsCAFile=certifi.where(),  maxPoolSize=100)
 database = os.environ['DEV_DATABASE'] if env == "LOCAL" else os.environ['DATABASE']
 
+# Use manual modified lifetime
+try:
+    session_collection = client[os.environ['DEV_DATABASE'] if env == "LOCAL" else os.environ['DATABASE']]['sessions'] 
+    session_collection.drop_index("expiration_1")
+except:
+    pass
+
+
 mail = Mail()
 db = client[database]
 
@@ -89,12 +97,6 @@ def create_app():
     app.config['SESSION_MONGODB_COLLECT'] = 'sessions'
     app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(minutes = int(os.environ['SESSION_TIMEOUT']))
 
-    # Use manual modified lifetime
-    try:
-        session_collection = client[os.environ['DEV_DATABASE'] if env == "LOCAL" else os.environ['DATABASE']]['sessions'] 
-        session_collection.drop_index("expiration_1")
-    except:
-        pass
 
     app.config['YEARS'] = os.environ['YEARS']
  
