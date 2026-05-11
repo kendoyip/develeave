@@ -19,11 +19,13 @@ from office365.runtime.auth.authentication_context import AuthenticationContext
 from office365.sharepoint.client_context import ClientContext
 # from office365.sharepoint.files.file import File
 # from office365.sharepoint.listitems.caml.caml_query import CamlQuery  
-from office365.runtime.http.request_options import RequestOptions
+# from office365.runtime.http.request_options import RequestOptions
 # from office365.sharepoint.files.file_creation_information import FileCreationInformation
 
+env = os.environ['ENVIRONMENT']
+
 client = MongoClient(os.environ['MONGODB_URL'], tls=True, tlsAllowInvalidCertificates=True, tlsCAFile=certifi.where(),  maxPoolSize=100)
-database = os.environ['DATABASE']
+database = os.environ['DEV_DATABASE'] if env == "LOCAL" else os.environ['DATABASE']
 
 mail = Mail()
 db = client[database]
@@ -48,7 +50,6 @@ def create_app():
         
     app = Flask(__name__, static_folder=static_folder, template_folder=template_folder)   
 
-    env = os.environ['ENVIRONMENT']      
 
     #if env == "HEROKU":        
         # read MailerToGo env vars
@@ -82,10 +83,18 @@ def create_app():
     app.config['SESSION_TYPE'] = 'mongodb'  
     app.config['SESSION_KEY_PREFIX'] = 'session:' 
 
+
     app.config['SESSION_MONGODB'] = client    
-    app.config['SESSION_MONGODB_DB'] =  os.environ['DATABASE']
+    app.config['SESSION_MONGODB_DB'] =  os.environ['DEV_DATABASE'] if env == "LOCAL" else os.environ['DATABASE']
     app.config['SESSION_MONGODB_COLLECT'] = 'sessions'
     app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(minutes = int(os.environ['SESSION_TIMEOUT']))
+
+    # Use manual modified lifetime
+    try:
+        session_collection = client[os.environ['DEV_DATABASE'] if env == "LOCAL" else os.environ['DATABASE']]['sessions'] 
+        session_collection.drop_index("expiration_1")
+    except:
+        pass
 
     app.config['YEARS'] = os.environ['YEARS']
  

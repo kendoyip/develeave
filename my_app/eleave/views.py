@@ -320,11 +320,11 @@ def getLeaveGroups():
 
 def getAllOffice():
     # allOffice = ['HKG', 'REG', 'TPE', 'DEL', 'FLR', 'CHN']
-    allOffice = eleaveDtl.distinct('staff.office')
+    allOffice = eleaveDtl.distinct('staff.hr_office')
 
     # NY for approval only, drop NY in the list
-    if 'NY' in allOffice:
-        allOffice.remove('NY')
+    if 'NYO' in allOffice:
+        allOffice.remove('NYO')
 
     # CHN drop as well
     if 'CHN' in allOffice:
@@ -359,8 +359,8 @@ def specialLeaveRefNo(ofc, year):
     elif ofc == "DEL":
         code = "IN"
 
-    # elif ofc == "REG":
-    #     code = "RG"
+    elif ofc == "REG":
+        code = "RG"
 
     # elif ofc == "CHN":
     #     code = "CN"
@@ -369,7 +369,7 @@ def specialLeaveRefNo(ofc, year):
         code = "IT"
 
     zerodigit = "0" * (3 - int(len(str(maxRefNo))))
-    return str(f"{code}{year}{zerodigit}{maxRefNo}")
+    return str(f"{code}-{year}-{zerodigit}{maxRefNo}")
 
 
 def getAllSpecialRef(racf, super, localtime):
@@ -2215,7 +2215,8 @@ def applyLeave (psInput):
                 # print (getYearCarryForward(year, getStaffRecord(racf), type))
 
                 if allworkday > entitled:
-                    return ({"pass": False, "error_message" : "Not enough days left for the leave", "result": None,  "Status_code": 501})
+                    if not super:
+                        return ({"pass": False, "error_message" : "Not enough days left for the leave", "result": None,  "Status_code": 501})
             
             # Sick leave
             if type == "LVE04" or type == "LVE05":
@@ -2231,7 +2232,7 @@ def applyLeave (psInput):
                     # else:
                     #     warnings = "Reminder:  Total Full Paid Sick Leave taken has already reached 7 days which is the maximum cap of current leave calendar year (included below leave application)"
             
-            # No pay leaveth
+            # No pay leave
             if type == "LVE06":
                 entitled = (getYearEntitlement(year, getStaffRecord(racf), "LVE01") + getYearCarryForward(year, getStaffRecord(racf), "LVE01"))
                 allworkday = float(len(getAllLeave(racf, year, ["LVE01"], False))) * 0.5
@@ -2995,7 +2996,7 @@ def apiPrintSummary():
             #wb.save(filename="F:\mmgapp\dev\eleave\output\LeaveSummary.xlsx")
             wb.close()            
             print('sending file...')
-            return send_file(out,  attachment_filename='a_file.xls', mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')      
+            return send_file(out,  download_name='Summary_Report.xls', mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', as_attachment=True)      
         else:            
             return jsonify({"error_message" : "Sorry, we failed to generate Leave Summary.  Perhaps no data for the year"}), 501    
         
@@ -3561,12 +3562,15 @@ def apiChangeLeaveRecordDate(psInput):
 
 def submitRequest(psInput):
 
+    # Regional = Hong Kong Office (for validation checking)
+    ofc_for_checking = "HKG" if psInput['office'] in ('REG', 'HKG') else psInput['office']
+
     # Validation
 
     # duplicated approval#
     history_h = list(otherLeaves.find({"ref_no": psInput['ref_no']}))
     if len(history_h) > 0:
-        print (history_h)
+        # print (history_h)
         return ({"pass": False, "error_message" : "Error on duplicated approval #", "result": [], "status_code": 901}) 
     
     if psInput['office'] == "":
@@ -3593,8 +3597,37 @@ def submitRequest(psInput):
     
     # Entitled day should less than the days between start and end
     duration = (datetime.strptime(psInput['period_end'], "%Y-%m-%d") - datetime.strptime(psInput['period_start'], "%Y-%m-%d")) + timedelta(days=1)
+    
+    # Count Public Holidays if exclusive
+    start_date = datetime.strptime(psInput['period_start'], "%Y-%m-%d").date()
+    end_date = datetime.strptime(psInput['period_end'], "%Y-%m-%d").date()
 
-    if duration < timedelta(days=float(psInput['entitled_days'])):
+    am_count = 0
+    pm_count = 0
+
+    holidays = getPublicHolidays(
+        office=ofc_for_checking, 
+        start_date=datetime.strptime(psInput['period_start'], "%Y-%m-%d"),
+        end_date=datetime.strptime(psInput['period_end'], "%Y-%m-%d")
+    )
+
+    for h in holidays:
+        h_date = datetime.strptime(h['Date'], "%Y-%m-%d").date()
+        
+        if start_date <= h_date <= end_date:
+            if h['Time'] == 'AM':
+                am_count += 1
+            elif h['Time'] == 'PM':
+                pm_count += 1
+
+    if eval(psInput['excluded_holidays']):
+        total_half_days = am_count + pm_count
+        total_days = total_half_days * 0.5
+    else:
+        total_days = 0
+
+
+    if duration < timedelta(days=float(psInput['entitled_days']) + total_days):
         return ({"pass": False, "error_message" : "Entitled days should be less than the duration of period start and end", "result": [], "status_code": 912}) 
     
     if psInput['accumulated'] == "":
@@ -3608,7 +3641,7 @@ def submitRequest(psInput):
         return ({"pass": False, "error_message" : "Your end date of application is earlier than your start date input!", "result": [], "status_code": 911}) 
     
     # Match staff office
-    if getStaffRecord(psInput['racf'])['staff']['office'] != psInput['office']:
+    if getStaffRecord(psInput['racf'])['staff']['hr_office'] != psInput['office']:
         return ({"pass": False, "error_message" : "Office code does not match with staff records", "result": [], "status_code": 912}) 
     
 
@@ -3635,7 +3668,7 @@ def submitRequest(psInput):
     staff_fullname = getStaffRecord(psInput['racf'])['staff']['name']
     staff_dept = getStaffRecord(psInput['racf'])['staff']['dept']
     leave_name = str(list(leaveTypes.find({'leave_type_id': psInput['leave_type']}))[0]['leave_type']).title()
-    reference_no_inEmail = str(psInput['ref_no'])[0:2] + "/" + str(psInput['ref_no'])[2:6] + "/" + str(psInput['ref_no'])[6:]
+    reference_no_inEmail = psInput['ref_no']
 
 
     # Date presentation in email
