@@ -27,12 +27,6 @@ env = os.environ['ENVIRONMENT']
 client = MongoClient(os.environ['MONGODB_URL'], tls=True, tlsAllowInvalidCertificates=True, tlsCAFile=certifi.where(),  maxPoolSize=100)
 database = os.environ['DEV_DATABASE'] if env == "LOCAL" else os.environ['DATABASE']
 
-# Use manual modified lifetime
-try:
-    session_collection = client[os.environ['DEV_DATABASE'] if env == "LOCAL" else os.environ['DATABASE']]['sessions'] 
-    session_collection.drop_index("expiration_1")
-except:
-    pass
 
 
 mail = Mail()
