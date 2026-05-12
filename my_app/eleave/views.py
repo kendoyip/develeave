@@ -2215,8 +2215,7 @@ def applyLeave (psInput):
                 # print (getYearCarryForward(year, getStaffRecord(racf), type))
 
                 if allworkday > entitled:
-                    if not super:
-                        return ({"pass": False, "error_message" : "Not enough days left for the leave", "result": None,  "Status_code": 501})
+                    return ({"pass": False, "error_message" : "Not enough days left for the leave", "result": None,  "Status_code": 501})
             
             # Sick leave
             if type == "LVE04" or type == "LVE05":
@@ -3824,7 +3823,6 @@ def apiGetAllSpecialRef():
         time = datetime.strptime(psInput['localTime'], '%a %b %d %Y %H:%M:%S')
 
     result = getAllSpecialRef(racf, super, time)
-    print (result)
     return jsonify(result) 
 
 
