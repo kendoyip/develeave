@@ -54,6 +54,7 @@ leaveGroups = db["leave_groups"]
 maintenance = db["eleave_maintenance"]
 reportMap = db["fileDirectory"]
 otherLeaves = db["other_leaves"]
+summer_hours = db["summer_hours"]
 
 #Global Constant
 status = list(maintenance.find({"table": { "$eq" : "globalConstant"}}))
@@ -568,6 +569,7 @@ def getLeaveHistory(psYearStart, psYearEnd, psRecord):
 # return:
 # return leave entitlement, format ["{leaveEntitle": int, "carryForward": int, "forfeoitDate": datetime} ]
 def getLeaveEntitlement(psYear, psLeaveTypeAttr, psRecord):
+
     entitlementLst = [ ]
     entitlement = {
         "leaveEntitle": 0,
@@ -1559,6 +1561,12 @@ def sendEmail(psRecord, psRefNo, otherRefNo, psAction, psRequest, finalapprover 
         except:
             localSend(message, title, sendTo, sendCc)
 
+def getSummerHours(office, year):
+
+    result = summer_hours.find_one(
+        {"Office": office, "Year": year}
+    )
+    return result
 
 def getPublicHolidays(office, start_date, end_date):
 
@@ -1691,6 +1699,45 @@ def getAllLeave(racf, year, leavetype, consecutive_search = False, otherRefNo = 
                                 history.append(data)
     
     return history
+
+def checkSummerHoursPeriod(office, year, psInput):
+
+    # Get summer hours list
+    summer = getSummerHours(office, year)
+
+    if summer:
+
+        # Parse DB strings to datetime objects for accurate comparison
+        summer_start = datetime.strptime(summer["Date_Start"], "%Y-%m-%d")
+        summer_end = datetime.strptime(summer["Date_End"], "%Y-%m-%d")
+
+        # Loop through each item using index so we can modify the original dictionary
+        for i in range(len(psInput["applying"])):
+            app = psInput["applying"][i]
+
+            # Parse application start and end dates
+            app_start = datetime.strptime(app["startDate"], "%Y-%m-%d")
+            app_end = datetime.strptime(app["endDate"], "%Y-%m-%d")    
+
+            # Parse application start and end time
+            start_time = app["startTime"]
+            end_time = app["endTime"]
+
+            # Check if the date is a Friday (weekday == 4)
+            is_start_friday = app_start.weekday() == 4
+            is_end_friday = app_end.weekday() == 4
+
+            # Check if dates fall completely within the summer hours window
+            is_start_in_summer = summer_start <= app_start <= summer_end
+            is_end_in_summer = summer_start <= app_end <= summer_end
+
+            # 3. If it's a Friday inside the summer period
+            # 3.1 check start date in summer hours first
+            if is_start_in_summer and is_start_friday and start_time == "PM":
+                return True
+            if is_end_in_summer and is_end_friday and end_time == "AM":
+                return True
+
 
 def checkConsecutive(racf, year, apply_h, type, office):
 
@@ -2190,6 +2237,11 @@ def applyLeave (psInput):
                 approver_status = getStaffRecord(approver)['staff']["status"]
                 if approver_status != "ACTIVE":
                     return ({"pass": False, "error_message" : "Invalid approver status, please contact HR for confirmation", "result": None,  "Status_code": 509})
+
+        # Check summer hours period
+        summer_hrs_failed = checkSummerHoursPeriod(office, year, psInput)
+        if summer_hrs_failed:
+            return ({"pass": False, "error_message" : "During Summer Hours, any leave on Friday must be applied as ONE full day. Half-day (AM/PM) is not allowed", "result": None,  "Status_code": 514})
 
 
         ################################################### Entitlement Leave checking ###################################################
