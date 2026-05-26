@@ -2240,7 +2240,7 @@ def applyLeave (psInput):
 
         # Check summer hours period
         summer_hrs_failed = checkSummerHoursPeriod(office, year, psInput)
-        if summer_hrs_failed:
+        if summer_hrs_failed and not super:
             return ({"pass": False, "error_message" : "During Summer Hours, any leave on Friday must be applied as ONE full day. Half-day (AM/PM) is not allowed", "result": None,  "Status_code": 514})
 
 
