@@ -363,7 +363,7 @@ def specialLeaveRefNo(ofc, year):
     elif ofc == "REG":
         code = "RG"
 
-    # elif ofc == "CHN":
+    # elif ofc == "CHN": # terminated
     #     code = "CN"
 
     elif ofc == "FLR":
@@ -373,24 +373,29 @@ def specialLeaveRefNo(ofc, year):
     return str(f"{code}-{year}-{zerodigit}{maxRefNo}")
 
 
-def getAllSpecialRef(racf, super, localtime):
+def getAllSpecialRef():
 
-    result = [ ]
+    # 1. Fetch the special leave types and create a lookup dictionary
+
+    special_leaves = getAllSpecialLeave()
+    leave_type_map = {item['leave_type_id']: item['leave_type'] for item in special_leaves}
     
-    record = list(otherLeaves.find({"racf": racf}))
+    records = list(otherLeaves.find({}))
+    
+    for rec in records:
+        if '_id' in rec:
+            rec['_id'] = str(rec['_id']) 
+        
+        # 2. Get the leave_type_id from the current record
+        # (Using .get() prevents KeyError if the field is missing)
+        type_id = rec.get('leave_type')
+        
+        # 3. Look up the description and add it to the record
+        # If it's not found in the map, it defaults to None (or you can set a default string)
+        rec['leave_type_name'] = leave_type_map.get(type_id, "Unknown Leave Type")
 
-    for rec in record:
-
-        if super:
-            if rec['status'] == "active":
-                result.append({'ref_no': rec['ref_no']})
-        else:
-            if rec['entitled_days'] > float(len(getAllLeave(rec['racf'], rec['year'], rec['leave_type'], False, rec['ref_no']))) * 0.5:
-                if rec['status'] == "active" and datetime.strptime(rec['period_end'], '%Y-%m-%d') >= localtime: 
-                    result.append({'ref_no': rec['ref_no']})
-
-    return result
-
+    
+    return records
 
 
 
@@ -470,6 +475,7 @@ def getYearCarryForward(Year, StaffRecord, Type):
 
 
 def getLeaveYrPeriod(psYear):
+
     try:
         yrIndex = json.loads(os.getenv('YEARS')).get('year').index(psYear)
         eleavePeriod = json.loads(os.getenv('YEARS')).get('period')[yrIndex]
@@ -482,7 +488,8 @@ def getLeaveYrPeriod(psYear):
         leaveYrPeriodLst = []
         leaveYrPeriodLst.append(leaveYrPeriod)
         return ({"pass": True, "error_message": "", "result":leaveYrPeriodLst, "Status_code": 200})
-    except:
+    except Exception as e :
+        print (e)
         return ({"pass": False, "error_message": "Fail to get leave year period", "result":[], "Status_code": 801})
 
 def chkPeriod(psStartDate, psEndDate, psYear):
@@ -1617,7 +1624,7 @@ def getPublicHolidays(office, start_date, end_date):
 
     return holiday_lst
 
-def getAllApply(start_date, start_time, end_date, end_time, type, office):
+def getAllApply(start_date, start_time, end_date, end_time, type, office, otherLeaveRef):
 
     continuous_dates = []
 
@@ -1625,25 +1632,59 @@ def getAllApply(start_date, start_time, end_date, end_time, type, office):
     current_time = start_time
 
     holiday_d = getPublicHolidays(office, start_date, end_date)
-    
-    while current_date < end_date or (current_date == end_date and current_time <= end_time):
 
-        date = current_date.strftime('%Y-%m-%d')
+    # Handle Inclusive Weekend checking
+    if otherLeaveRef == "":
+        special_leave = False
+        exclusive = True
+    else:
+        special_leave = True
+        if (list(leaveTypes.find({'leave_type_id': type}))[0]['other_leave'] and otherLeaveRef[0]['excluded_holidays']):
+            exclusive = True
+        else:
+            exclusive = False
 
-        if next((ph['Remark'] for ph in holiday_d if str(ph['Date']) == str(date) and str(ph['Time']) == current_time), "") == "":
+    # Normal leave and speical leave with exclusive weekend :
+    if (special_leave == False) or (special_leave and exclusive):
+
+        while current_date < end_date or (current_date == end_date and current_time <= end_time):
+
+            date = current_date.strftime('%Y-%m-%d')
+
+            if next((ph['Remark'] for ph in holiday_d if str(ph['Date']) == str(date) and str(ph['Time']) == current_time), "") == "":
+
+                continuous_dates.append({
+                    'applied_date': date,
+                    'applied_time': current_time,
+                    'applied_type': type
+                })
+                
+            if current_time == 'AM':
+                current_time = 'PM'
+            else:
+                current_time = 'AM'
+                current_date += relativedelta(days=1)
+
+    elif special_leave and exclusive == False:
+
+        while current_date < end_date or (current_date == end_date and current_time <= end_time):
+
+            date = current_date.strftime('%Y-%m-%d')
+
+            # if next((ph['Remark'] for ph in holiday_d if str(ph['Date']) == str(date) and str(ph['Time']) == current_time), "") == "":
 
             continuous_dates.append({
                 'applied_date': date,
                 'applied_time': current_time,
                 'applied_type': type
             })
-            
-        if current_time == 'AM':
-            current_time = 'PM'
-        else:
-            current_time = 'AM'
-            current_date += relativedelta(days=1)
-    
+                
+            if current_time == 'AM':
+                current_time = 'PM'
+            else:
+                current_time = 'AM'
+                current_date += relativedelta(days=1)
+                
     return continuous_dates
 
 def getAllLeave(racf, year, leavetype, consecutive_search = False, otherRefNo = ""):
@@ -2049,12 +2090,12 @@ def getOOOdays(racf, year, apply_h, type, office):
 
 def getPhInclusiveWorkDays(racf, year, apply_h, type, office):
 
-    leave_d = list(eleaveDtl.find({'staff.racf': racf}))
+    # leave_d = list(eleaveDtl.find({'staff.racf': racf}))
 
     # get same type group
-    leave_t = list(leaveTypes.find({'leave_type_id': type}))
-    leave_g = list(leaveTypes.find({'calendar_days_group': leave_t[0]['calendar_days_group']}))
-    same_leave = [leave['leave_type_id'] for leave in leave_g]
+    # leave_t = list(leaveTypes.find({'leave_type_id': type}))
+    # leave_g = list(leaveTypes.find({'calendar_days_group': leave_t[0]['calendar_days_group']}))
+    # same_leave = [leave['leave_type_id'] for leave in leave_g]
 
     # start/ End date
     if len(apply_h) < 2:
@@ -2150,6 +2191,7 @@ def applyLeave (psInput):
         type = psInput['type']
         year = psInput['year']
         otherRefNo = ""
+        otherLeaveRef = ""
         
     else:
         # Get otherLeaveRef
@@ -2173,6 +2215,9 @@ def applyLeave (psInput):
     spid = psInput['sharePointId']
     super = psInput['superUser']
 
+    # Determine Value
+    is_other_leave = leaveTypes.find_one({'leave_type_id': type}).get('other_leave', False) if leaveTypes.find_one({'leave_type_id': type}) else False
+    excluded_holidays = otherLeaveRef[0].get('excluded_holidays', False) if otherLeaveRef else False
 
     # warning output
     warnings = ""
@@ -2197,7 +2242,7 @@ def applyLeave (psInput):
         end_time_os = row['applyingScreen']['endTime']
 
         # Get current applying (applying date list for skip weekend, public holiday)
-        applying = getAllApply(start_date, start_time, end_date, end_time, type, office)
+        applying = getAllApply(start_date, start_time, end_date, end_time, type, office, otherLeaveRef)
         # Get applied leave history
         applied = getAllLeave(racf, year, type, False)
         # Get public holiday list
@@ -2208,15 +2253,17 @@ def applyLeave (psInput):
 
         ################################################### Basic checking ###################################################
 
-        # check start date and end date cannot be weekends/ holidays
+        # check start date and end date cannot be weekends/ holidays (except speical leave with inclusive weekend)
         # Start
-        find = next((ph['Remark'] for ph in holiday if str(ph['Date']) == str(start_date.strftime('%Y-%m-%d')) and str(ph['Time']) == str(start_time)), "")
-        if find != "":
-            return ({"pass": False, "error_message" : "Leave applying start in Weekends / Holidays", "result": None, "Status_code": 502})
-        # End
-        find = next((ph['Remark'] for ph in holiday if str(ph['Date']) == str(end_date.strftime('%Y-%m-%d')) and str(ph['Time']) == str(end_time)), "")
-        if find != "":
-            return ({"pass": False, "error_message" : "Leave applying end in Weekends / Holidays", "result": None, "Status_code": 502})
+        if (not is_other_leave) or (is_other_leave and excluded_holidays):
+            find = next((ph['Remark'] for ph in holiday if str(ph['Date']) == str(start_date.strftime('%Y-%m-%d')) and str(ph['Time']) == str(start_time)), "")
+            if find != "":
+                return ({"pass": False, "error_message" : "Leave applying start in Weekends / Holidays", "result": None, "Status_code": 502})
+            # End
+            find = next((ph['Remark'] for ph in holiday if str(ph['Date']) == str(end_date.strftime('%Y-%m-%d')) and str(ph['Time']) == str(end_time)), "")
+            if find != "":
+                return ({"pass": False, "error_message" : "Leave applying end in Weekends / Holidays", "result": None, "Status_code": 502})
+
 
         # Check applying date cannot be overlap
         # Applied
@@ -3636,10 +3683,6 @@ def submitRequest(psInput):
     if float(psInput['entitled_days']) > 0 and psInput['entitled_days'] == "":
         return ({"pass": False, "error_message" : "Entitled Days cannot be 0 or blank", "result": [], "status_code": 905}) 
     
-    # Optional
-    #if psInput['ref_date'] == "":
-    #    return ({"pass": False, "error_message" : "Reference Date cannot be blank", "result": [], "status_code": 906}) 
-    
     if psInput['period_start'] == "":
         return ({"pass": False, "error_message" : "Period Start cannot be blank", "result": [], "status_code": 907}) 
     
@@ -3678,6 +3721,7 @@ def submitRequest(psInput):
         total_days = 0
 
 
+    print (total_days)
     if duration < timedelta(days=float(psInput['entitled_days']) + total_days):
         return ({"pass": False, "error_message" : "Entitled days should be less than the duration of period start and end", "result": [], "status_code": 912}) 
     
@@ -3695,11 +3739,32 @@ def submitRequest(psInput):
     if getStaffRecord(psInput['racf'])['staff']['hr_office'] != psInput['office']:
         return ({"pass": False, "error_message" : "Office code does not match with staff records", "result": [], "status_code": 912}) 
     
+    # Check same type and same period start and end
+    history_u = list(otherLeaves.find({"racf": psInput['racf'], "leave_type": psInput['leave_type']}))
+
+    input_start = datetime.strptime(psInput['period_start'], '%Y-%m-%d').date()
+    input_end = datetime.strptime(psInput['period_end'], '%Y-%m-%d').date()
+
+    for record in history_u:
+        if record.get('status') == 'Canceled' or record.get('status') == "Rejected":
+            continue
+
+        history_start = datetime.strptime(record['period_start'], '%Y-%m-%d').date()
+        history_end = datetime.strptime(record['period_end'], '%Y-%m-%d').date()
+
+        # Check if the two date ranges overlap
+        if input_start <= history_end and input_end >= history_start:
+            return {
+                "pass": False, 
+                "error_message": f"Requested period overlaps with an existing requisition ({record['ref_no']}).", 
+                "result": [],
+                "status_code": 913
+            }
 
     # Create a document to be inserted
     request = {
         'office': psInput['office'],
-        'year': psInput['year'],
+        'year': int(psInput['year']),
         'racf': psInput['racf'],
         'ref_no': psInput['ref_no'],
         'leave_type': psInput['leave_type'],
@@ -3709,7 +3774,7 @@ def submitRequest(psInput):
         'period_end': psInput['period_end'],
         'accumulated': eval(psInput['accumulated']),
         'excluded_holidays': eval(psInput['excluded_holidays']),
-        'status': "active"
+        'status': "Pending"
     }
 
     # Insert the document into the collection
@@ -3730,31 +3795,52 @@ def submitRequest(psInput):
     period_end = f"{period_end[1]}/{period_end[2]}/{period_end[0]}"
 
     if psInput['ref_date']:
-        ref_date = psInput['ref_date'].replace('-', '/').split('/')
-        ref_date = f"{ref_date[1]}/{ref_date[2]}/{ref_date[0]}"
+        ref_date = psInput['ref_date']
     else:
         ref_date = "NA"
 
-    title = f"<E-LEAVE> {staff_fullname} ({staff_dept}) - Requisition for {leave_name} #APPROVED"
+    title = f"<E-LEAVE> {staff_fullname} ({staff_dept}) - Requisition for {leave_name} #PENDING"
+
+    # Attachment
+    attachments = psInput.get('attachments', None)
+    attachment_names = None
+        
+    if attachments is not None:
+        attachment_names = [file.filename for file in attachments]
+
     message = (
-        f"Dear Applicant, \n\n"
-        f"Your requisition for {leave_name} is approved and details are as below.\n\n"
+        f"Dear HR Approver, \n\n"
+        f"A leave requisition is pending your approval.\n\n"
+        f"APPLICANT: {staff_fullname} ({psInput['office']} / {staff_dept})\n"
         f"REFERENCE NO.: {reference_no_inEmail}\n"
         f"REQUISITION DATE: {ref_date}\n"
         f"ENTITLED DAYS: {float(psInput['entitled_days'])} DAY(S)\n"
         f"ALLOWED PERIOD: {period_start} to {period_end}\n\n"
-        f"When submitting your application, please choose the 'Others' Leave Type and Reference # indicated above from the system. "
-        f"The remaining procedures will be the same as those for the prior leave request.\n\n"
-        f"Should you have any queries, please contact local HR.\n\n"
-        f"Thanks,\n"
+        f"Please log into the system to review the details and take appropriate action.\n\n"
+        f"Should you have any questions, please contact the requester.\n\n"
+        f"Thank you,\n"
         f"e-Leave"
     )
+
+    # message = (
+    #     f"Dear Applicant, \n\n"
+    #     f"Your requisition for {leave_name} is approved and details are as below.\n\n"
+    #     f"REFERENCE NO.: {reference_no_inEmail}\n"
+    #     f"REQUISITION DATE: {ref_date}\n"
+    #     f"ENTITLED DAYS: {float(psInput['entitled_days'])} DAY(S)\n"
+    #     f"ALLOWED PERIOD: {period_start} to {period_end}\n\n"
+    #     f"When submitting your application, please choose the 'Others' Leave Type and Reference # indicated above from the system. "
+    #     f"The remaining procedures will be the same as those for the prior leave request.\n\n"
+    #     f"Should you have any queries, please contact local HR.\n\n"
+    #     f"Thanks,\n"
+    #     f"e-Leave"
+    # )
 
     sendTo = getStaffRecord(psInput['racf'])['staff']['email']
     sendCc = "billy.chan@macys.com"
 
     try:
-        postmarker(message, title, sendTo, sendCc, None, None)
+        postmarker(message, title, sendTo, sendCc, attachments, attachment_names)
     except:
         # If you're writing this to a file or sending it over a network, ensure you encode it properly
         message = message.encode('utf-8')
@@ -3779,13 +3865,137 @@ def cancelRequest(psInput):
         return ({"pass": False, "error_message" : "Reference has not been completely canceled.", "result": [], "status_code": 810}) 
     
     # pass validation
-    update = otherLeaves.update_one({"ref_no": ref_no}, {"$set": {"status": "canceled"}})
+    update = otherLeaves.update_one({"ref_no": ref_no}, {"$set": {"status": "Canceled"}})
 
     if update.matched_count > 0:
+
+        # Successfully
+        refDetails = getRefDetails(ref_no)[0]
+
+        staff_fullname = getStaffRecord(refDetails['racf'])['staff']['name']
+        staff_dept = getStaffRecord(refDetails['racf'])['staff']['dept']
+        leave_name = str(list(leaveTypes.find({'leave_type_id': refDetails['leave_type']}))[0]['leave_type']).title()
+        reference_no_inEmail = psInput['ref_no']
+
+        title = f"<E-LEAVE> {staff_fullname} ({staff_dept}) - Requisition for {leave_name} #CANCELED"
+
+        message = (
+            f"Dear Applicant, \n\n"
+            f"Your requisition for {leave_name} has been canceled.\n\n"
+            f"REFERENCE NO.: {reference_no_inEmail}\n\n"
+            f"This requisition is no longer available for applying leave.\n\n"
+            f"Should you have any queries, please contact local HR.\n\n"
+            f"Thanks,\n"
+            f"e-Leave"
+        )
+
+        sendTo = getStaffRecord(refDetails['racf'])['staff']['email']
+        sendCc = "billy.chan@macys.com"
+
+        try:
+            postmarker(message, title, sendTo, sendCc, None, None)
+        except:
+            # If you're writing this to a file or sending it over a network, ensure you encode it properly
+            message = message.encode('utf-8')
+            localSend(message, title, sendTo, sendCc)
+
+
         return ({"pass": True, "error_message" : None, "result": [], "status_code": 200}) 
     else:
         return ({"pass": False, "error_message" : "Cancel failed, please check the Approval #", "result": [], "status_code": 810}) 
     
+
+def approveRequest(psInput):
+
+    ref_no = psInput['ref_no']
+    
+    # pass validation
+    update = otherLeaves.update_one({"ref_no": ref_no}, {"$set": {"status": "Approved"}})
+
+    if update.matched_count > 0:
+
+        # Successfully
+        refDetails = getRefDetails(ref_no)[0]
+
+        staff_fullname = getStaffRecord(refDetails['racf'])['staff']['name']
+        staff_dept = getStaffRecord(refDetails['racf'])['staff']['dept']
+        leave_name = str(list(leaveTypes.find({'leave_type_id': refDetails['leave_type']}))[0]['leave_type']).title()
+        reference_no_inEmail = psInput['ref_no']
+
+        title = f"<E-LEAVE> {staff_fullname} ({staff_dept}) - Requisition for {leave_name} #APPROVED"
+
+        message = (
+            f"Dear Applicant, \n\n"
+            f"Your requisition for {leave_name} is approved and details are as below.\n\n"
+            f"REFERENCE NO.: {reference_no_inEmail}\n"
+            f"REQUISITION DATE: {refDetails['ref_date']}\n"
+            f"ENTITLED DAYS: {float(refDetails['entitled_days'])} DAY(S)\n"
+            f"ALLOWED PERIOD: {refDetails['period_start']} to {refDetails['period_end']}\n\n"
+            f"When submitting your application, please choose the 'Others' Leave Type and Reference # indicated above from the system. "
+            f"The remaining procedures will be the same as those for the prior leave request.\n\n"
+            f"Should you have any queries, please contact local HR.\n\n"
+            f"Thanks,\n"
+            f"e-Leave"
+        )
+
+        sendTo = getStaffRecord(refDetails['racf'])['staff']['email']
+        sendCc = "billy.chan@macys.com"
+
+        try:
+            postmarker(message, title, sendTo, sendCc, None, None)
+        except:
+            # If you're writing this to a file or sending it over a network, ensure you encode it properly
+            message = message.encode('utf-8')
+            localSend(message, title, sendTo, sendCc)
+
+        return ({"pass": True, "error_message" : None, "result": [], "status_code": 200}) 
+    else:
+        return ({"pass": False, "error_message" : "Approve failed, please check the Approval #", "result": [], "status_code": 810}) 
+
+
+def rejectRequest(psInput):
+
+    ref_no = psInput['ref_no']
+    
+    # pass validation
+    update = otherLeaves.update_one({"ref_no": ref_no}, {"$set": {"status": "Rejected"}})
+
+    if update.matched_count > 0:
+
+        # Successfully
+        refDetails = getRefDetails(ref_no)[0]
+
+        staff_fullname = getStaffRecord(refDetails['racf'])['staff']['name']
+        staff_dept = getStaffRecord(refDetails['racf'])['staff']['dept']
+        leave_name = str(list(leaveTypes.find({'leave_type_id': refDetails['leave_type']}))[0]['leave_type']).title()
+        reference_no_inEmail = psInput['ref_no']
+
+        title = f"<E-LEAVE> {staff_fullname} ({staff_dept}) - Requisition for {leave_name} #REJECTED"
+
+        message = (
+            f"Dear Applicant, \n\n"
+            f"Your requisition for {leave_name} has been rejected.\n\n"
+            f"REFERENCE NO.: {reference_no_inEmail}\n\n"
+            f"This requisition is no longer available for applying leave.\n\n"
+            f"Should you have any queries, please contact local HR.\n\n"
+            f"Thanks,\n"
+            f"e-Leave"
+        )
+
+        sendTo = getStaffRecord(refDetails['racf'])['staff']['email']
+        sendCc = "billy.chan@macys.com"
+
+        try:
+            postmarker(message, title, sendTo, sendCc, None, None)
+        except:
+            # If you're writing this to a file or sending it over a network, ensure you encode it properly
+            message = message.encode('utf-8')
+            localSend(message, title, sendTo, sendCc)
+
+        return ({"pass": True, "error_message" : None, "result": [], "status_code": 200}) 
+    else:
+        return ({"pass": False, "error_message" : "Approve failed, please check the Approval #", "result": [], "status_code": 810}) 
+
 
 def getRefDetails(ref_no):
     result = []
@@ -3848,6 +4058,45 @@ def checkOtherLeave(psInput):
 
     return ({"pass": True, "error_message" : "VALIDATION MODE.  Data pass validation.  Database NOT updated !", "result": [], "Status_code": 200})
 
+def getAllSpecialRefPerUser(racf, super, current_time):
+
+    special_leaves = getAllSpecialLeave()
+    leave_type_map = {item['leave_type_id']: item['leave_type'] for item in special_leaves}
+    
+    query = {
+        "racf": racf,
+        "status": "Approved",
+    }
+    
+    if not super:
+        try:
+            parsed_time = datetime.strptime(current_time, '%a %b %d %Y %H:%M:%S')
+            formatted_time = parsed_time.strftime('%Y-%m-%d')
+        except ValueError:
+            formatted_time = current_time
+            
+        query["period_end"] = {"$gte": formatted_time}
+        
+    records = list(otherLeaves.find(query))
+    result = []
+
+    for rec in records:
+        ref_no = rec['ref_no']
+        detail = getRefDetails(ref_no)[0]
+
+        if detail['days_left'] < 1:
+            continue
+
+        if '_id' in rec:
+            rec['_id'] = str(rec['_id']) 
+        
+        type_id = rec.get('leave_type')
+        rec['leave_type_name'] = leave_type_map.get(type_id, "Unknown Leave Type")
+
+        result.append(rec)
+
+    return result
+
 @eleave.route("/api/getoffice")
 @checkLogged.check_logged
 def apiGetOffice():
@@ -3862,20 +4111,32 @@ def apiGetSpecialLeave():
     return jsonify(result) 
 
 
-@eleave.route("/api/getAllSpecialRef", methods=['POST'])
+@eleave.route("/api/getAllSpecialRef", methods=['GET'])
 @checkLogged.check_logged
 def apiGetAllSpecialRef():
-    psInput = request.get_json()
-
-    racf = psInput['racf']
-    super = psInput['super_mode']
     try:
-        time = datetime.strptime(psInput['localTime'], '%a %b %d %Y')
-    except:
-        time = datetime.strptime(psInput['localTime'], '%a %b %d %Y %H:%M:%S')
+        result = getAllSpecialRef()
+        return jsonify(result)
+    
+    except Exception as e:
+        print("Error in getAllSpecialRef:", e)
+        return jsonify({"error": str(e)}), 500
 
-    result = getAllSpecialRef(racf, super, time)
-    return jsonify(result) 
+
+@eleave.route("/api/getAllSpecialRefPerUser", methods=['POST'])
+@checkLogged.check_logged
+def apiGetAllSpecialRefPerUser():
+    try:
+
+        psInput = request.get_json()
+
+        result = getAllSpecialRefPerUser(psInput['racf'], psInput['super_mode'], psInput['localTime'])
+        return jsonify(result)
+    
+    except Exception as e:
+        print("Error in getAllSpecialRefPerUser:", e)
+        return jsonify({"error": str(e)}), 500
+
 
 
 @eleave.route("/api/getRefDetails", methods=['POST'])
@@ -3908,12 +4169,18 @@ def apiSpecialLeaveRefNo():
 @eleave.route("/api/submitRequest", methods=['POST'])
 @checkLogged.check_logged
 def apiSubmitRequest():    
-    psInput = request.get_json()
+    psInput = request.form.to_dict()
+    
+    attachments = request.files.getlist("attachment")
+    if attachments:
+        psInput['attachments'] = attachments
+
     result = submitRequest(psInput)
+    
     try: 
-        return jsonify(result), result['status_code'] # APP
+        return jsonify(result), result['status_code']
     except:
-        return jsonify(result) # postman
+        return jsonify(result)
 
 @eleave.route("/api/cancelRequest", methods=['POST'])
 @checkLogged.check_logged
@@ -3924,6 +4191,29 @@ def apiCancelRequest():
         return jsonify(result), result['status_code'] # APP
     except:
         return jsonify(result) # postman
+
+
+@eleave.route("/api/approveRequest", methods=['POST'])
+@checkLogged.check_logged
+def apiApproveRequest():    
+    psInput = request.get_json()
+    result = approveRequest(psInput)
+    try: 
+        return jsonify(result), result['status_code'] # APP
+    except:
+        return jsonify(result) # postman
+
+
+@eleave.route("/api/rejectRequest", methods=['POST'])
+@checkLogged.check_logged
+def apiRejectRequest():    
+    psInput = request.get_json()
+    result = rejectRequest(psInput)
+    try: 
+        return jsonify(result), result['status_code'] # APP
+    except:
+        return jsonify(result) # postman
+
 
 
 

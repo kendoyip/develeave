@@ -299,6 +299,7 @@ def establishSessionData(impersonatedUser=""):
             "superUser": results['staff']["superUser"] if len(impersonatedUser) ==0 else session["superUser"], 
             "powerBI": results["staff"]["powerBI"], 
             "requisition": results["staff"]["requisition"], 
+            "requisition_mgt": results["staff"]["requisition_mgt"], 
             "partnersMode": True if len(results["staff"]["partners"]) > 0 else False,
             "environment":  os.environ["ENVIRONMENT"],   
             "databaseSchema":  "dev" if database[:3].lower() == "dev" else "prod",
