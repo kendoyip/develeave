@@ -27,8 +27,6 @@ env = os.environ['ENVIRONMENT']
 client = MongoClient(os.environ['MONGODB_URL'], tls=True, tlsAllowInvalidCertificates=True, tlsCAFile=certifi.where(),  maxPoolSize=100)
 database = os.environ['DEV_DATABASE'] if env == "LOCAL" else os.environ['DATABASE']
 
-
-
 mail = Mail()
 db = client[database]
 
@@ -40,10 +38,11 @@ app_principal = {
 
 sharepoint_path =  os.environ['SHAREPOINT_PATH']
 
-context_auth = AuthenticationContext(url=site_url)
-context_auth.acquire_token_for_app(client_id=app_principal['client_id'], client_secret=app_principal['client_secret'])    
-ctx = ClientContext(site_url, context_auth)
-
+# context_auth = AuthenticationContext(url=site_url)
+# context_auth.acquire_token_for_app(client_id=app_principal['client_id'], client_secret=app_principal['client_secret'])    
+# ctx = ClientContext(site_url, context_auth)
+ctx = None
+sharepoint_path = None
 
 def create_app():
 
@@ -91,7 +90,6 @@ def create_app():
     app.config['SESSION_MONGODB_COLLECT'] = 'sessions'
     app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(minutes = int(os.environ['SESSION_TIMEOUT']))
 
-
     app.config['YEARS'] = os.environ['YEARS']
  
     Session(app)
@@ -116,7 +114,7 @@ def create_app():
     #from my_app.maintenance.views import maintenance
     app.register_blueprint(entry, url_prefix='')
     app.register_blueprint(eleave, url_prefix='/eleave')
-    app.register_blueprint(spoint, url_prefix='/spoint')
+    #app.register_blueprint(spoint, url_prefix='/spoint')
     #app.register_blueprint(maintenance, url_prefix='/maintenance')
 
 
