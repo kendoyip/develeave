@@ -5,6 +5,8 @@ from flask import session, request, jsonify
 from openpyxl import load_workbook
 from openpyxl.cell import MergedCell
 from io import BytesIO 
+import io
+import zipfile
 from bson.objectid import ObjectId
 from datetime import datetime
 from openpyxl.utils.cell import coordinate_from_string, column_index_from_string
@@ -15,6 +17,9 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
 from email.mime.text import MIMEText
 from copy import copy
+
+from azure.storage.blob import BlobServiceClient
+from azure.core.exceptions import ResourceExistsError
 
 import pandas as pd
 import gridfs
@@ -1225,6 +1230,35 @@ def geticalFile(organizer, title, content, startDate, startTime, endDate, endTim
 
     return out
 
+def getAzurefiles(sharepoint_id):
+    file_bytes_list = []
+    file_names_list = []
+    
+    if not sharepoint_id:
+        return file_bytes_list, file_names_list
+        
+    try:
+        azure_conn = os.environ['AZURE_CONNECTION_STRING']
+        azure_storage_name = os.environ['AZURE_CONTAINER_NAME']
+        
+        service_client = BlobServiceClient.from_connection_string(azure_conn)
+        container_client = service_client.get_container_client(azure_storage_name)
+        
+        blobs = container_client.list_blobs(include=['metadata'])
+        for blob in blobs:
+            if blob.metadata and blob.metadata.get('sharePointId') == str(sharepoint_id):
+                blob_client = container_client.get_blob_client(blob.name)
+                download_stream = blob_client.download_blob()
+                file_bytes = download_stream.readall()
+                
+                file_bytes_list.append(io.BytesIO(file_bytes))
+                file_names_list.append(blob.name)
+                
+    except Exception as e:
+        print(f"Error fetching Azure files: {str(e)}")
+        pass
+        
+    return file_bytes_list, file_names_list
 
 def postmarker(message, title, sendTo, sendCC, attachment=None, attachmentname=None):
 
@@ -1419,9 +1453,12 @@ def sendEmail(psRecord, psRefNo, otherRefNo, psAction, psRequest, finalapprover 
     cc_no_pay = str(cc_no_pay)
 
     # Sharepoint document
-    site = "https://macysinc.sharepoint.com/sites/MMGOverseas/eleave" + str(leaveContent[0]["year"]) + "/Forms/AllItems.aspx?id=%2Fsites%2FMMGOverseas%2Feleave" + str(leaveContent[0]["year"]) +"%2F" + str(psRecord["staff"]["racf"]) + "%2F&FilterType1=Text&viewid=720379f5-eb23-410f-81d1-f4e43a1a1cab&FilterField1=SharePointID&FilterValue1=" + str(leaveContent[0]["sharePointId"])
-    if leaveContent[0]["type"] == "LVE04": sickleavewithcertmsg = "\n" + "Please download the supporting document(s) via the SharePoint link: " + "\n" + str(site)
-    else: sickleavewithcertmsg = ""
+    sickleavewithcertmsg = ""
+    # site = "https://macysinc.sharepoint.com/sites/MMGOverseas/eleave" + str(leaveContent[0]["year"]) + "/Forms/AllItems.aspx?id=%2Fsites%2FMMGOverseas%2Feleave" + str(leaveContent[0]["year"]) +"%2F" + str(psRecord["staff"]["racf"]) + "%2F&FilterType1=Text&viewid=720379f5-eb23-410f-81d1-f4e43a1a1cab&FilterField1=SharePointID&FilterValue1=" + str(leaveContent[0]["sharePointId"])
+    # if leaveContent[0]["type"] == "LVE04": sickleavewithcertmsg = "\n" + "Please download the supporting document(s) via the SharePoint link: " + "\n" + str(site)
+    # else: sickleavewithcertmsg = ""
+
+
 
     # ical file
     icsmessage = "(Optional) You may double-click the Outlook Calendar.ics to add this event to your calendar.  If you cancel it later, you will need to manually remove this event from the calendar. "
@@ -1509,6 +1546,15 @@ def sendEmail(psRecord, psRefNo, otherRefNo, psAction, psRequest, finalapprover 
                              "Leave Summary for " + str((leaveContent[0]["year"])) + " (" + str(psRecord["staff"]["racf"]) + ")" + ".xlsx",
                              "Outlook Calendar.ics"
                             ]
+            
+            if leaveContent[0]["type"] == "LVE04":
+                target_spid = str(leaveContent[0]["sharePointId"])
+                print (target_spid)
+                if target_spid:
+                    azure_file_bytes, azure_file_names = getAzurefiles(target_spid)
+                    attached_list.extend(azure_file_bytes)
+                    filename_list.extend(azure_file_names)
+                    print (azure_file_names)
             try:
                 postmarker(message, title, sendTo, sendCc, attached_list, filename_list)
             except:
@@ -2183,8 +2229,56 @@ def getPhInclusiveWorkDays(racf, year, apply_h, type, office):
 
     return float(result)
 
+# New add Azure upload at 07/10/26 because of sharepoint issue
+def azureUpload(attachments, metadata):
+
+    azure_conn = os.environ['AZURE_CONNECTION_STRING']
+    azure_storage_name = os.environ['AZURE_CONTAINER_NAME']
+
+    for attachment in attachments:
+
+        try:
+            base_name = os.path.basename(attachment['name'])
+            name_part, ext_part = os.path.splitext(base_name)
+            
+            base64_data = attachment['base64']
+            if ',' in base64_data:
+                base64_data = base64_data.split(',')[1]
+                
+            file_bytes = base64.b64decode(base64_data)
+
+            service_client = BlobServiceClient.from_connection_string(azure_conn)
+            
+            counter = 1
+            blob_name = base_name
+            blob_client = service_client.get_blob_client(container=azure_storage_name, blob=blob_name)
+
+            # Do checking with filename in storage, if current filename is existing, then rename _#1, #2, ...
+            while True:
+                try:
+                    blob_client.upload_blob(
+                        file_bytes, 
+                        overwrite=False, 
+                        metadata=metadata
+                    )
+                    break
+                except ResourceExistsError:
+                    blob_name = f"{name_part}({counter}){ext_part}"
+                    blob_client = service_client.get_blob_client(container=azure_storage_name, blob=blob_name)
+                    counter += 1
+
+        except Exception as e:
+            return ({"result": f"UPLOAD {attachment['name']} FAILED : {e}", "Status_code": 409})
+
+    return ({"result": "PASSED", "Status_code": 200})
+
+
+
+
 
 def applyLeave (psInput):
+
+    attachments = psInput.pop('attachments', [])
 
     # Special handling other leave
     if psInput['otherLeaveRef'] == "":
@@ -2454,9 +2548,22 @@ def applyLeave (psInput):
         
         update = updateDB2(id, updateRecord)
 
+        # Make mataData for uploading azure
+        meta = {
+            'sharePointId': str(spid),
+            "ref_no": str(ref_no),
+            'racf': str(racf)
+        }
+
+        upload_result = azureUpload(attachments, meta)
+
+        if upload_result['Status_code'] != 200:
+            return ({"pass": False, "error_message" : upload_result['result'], "result": None,  "Status_code": upload_result['Status_code']})
+
         if update['pass']:
             sendEmail(getStaffRecord(racf), ref_no, otherRefNo, df['gcActionApply'][0], df['gcActionApply'][0], 1, 1)
             
+
         return update
 
 
@@ -4213,6 +4320,75 @@ def apiRejectRequest():
         return jsonify(result), result['status_code'] # APP
     except:
         return jsonify(result) # postman
+
+@eleave.route('/api/downloadAzureDoc', methods=['POST'])
+@checkLogged.check_logged
+def download_azure_doc():
+    try:
+        data = request.json
+        doc_id = str(data.get('docId'))
+        
+        if not doc_id:
+            return jsonify({"error_message": "Missing document ID"}), 400
+
+        azure_conn = os.environ['AZURE_CONNECTION_STRING']
+        azure_storage_name = os.environ['AZURE_CONTAINER_NAME']
+        
+        service_client = BlobServiceClient.from_connection_string(azure_conn)
+        container_client = service_client.get_container_client(azure_storage_name)
+        
+        target_blobs = []
+        ref_no = None
+        racf = None
+        
+        blobs = container_client.list_blobs(include=['metadata'])
+        for blob in blobs:
+            if blob.metadata and blob.metadata.get('sharePointId') == doc_id:
+                target_blobs.append(blob.name)
+                
+                if not ref_no:
+                    ref_no = blob.metadata.get('ref_no')
+                if not racf:
+                    racf = blob.metadata.get('racf')
+                
+        if not target_blobs:
+            return jsonify({"error_message": "Document not found in Azure Storage"}), 404
+            
+        if len(target_blobs) == 1:
+            blob_client = container_client.get_blob_client(target_blobs[0])
+            download_stream = blob_client.download_blob()
+            file_bytes = download_stream.readall()
+            
+            return send_file(
+                io.BytesIO(file_bytes),
+                download_name=target_blobs[0],
+                as_attachment=True
+            )
+        else:
+            memory_file = io.BytesIO()
+            with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
+                for blob_name in target_blobs:
+                    blob_client = container_client.get_blob_client(blob_name)
+                    download_stream = blob_client.download_blob()
+                    file_bytes = download_stream.readall()
+                    
+                    zf.writestr(blob_name, file_bytes)
+            
+            memory_file.seek(0)
+            
+            if ref_no and racf:
+                zip_filename = f"{ref_no} ({racf}).zip"
+            else:
+                zip_filename = f"documents_{doc_id}.zip"
+            
+            return send_file(
+                memory_file,
+                download_name=zip_filename,
+                as_attachment=True
+            )
+
+    except Exception as e:
+        return jsonify({"error_message": f"Failed to download document: {str(e)}"}), 500
 
 
 
