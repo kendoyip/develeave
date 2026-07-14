@@ -3652,12 +3652,15 @@ def apiPartnersLeave():
 @checkLogged.check_logged
 #@app.route("/api/applyleave", methods=['POST'])
 def apiApplyLeave():    
-    psInput = request.get_json()
+    psInput = json.loads(request.form.get('entireLeaveRequest'))
+    psInput['attachments'] = request.files.getlist('attachments')
+    
     result = applyLeave(psInput)
+    
     try: 
-        return jsonify(result), result['Status_code'] # APP
+        return jsonify(result), result['Status_code'] 
     except:
-        return jsonify(result) # postman
+        return jsonify(result)
 
 @eleave.route("/api/listapprove", methods=['POST'])
 @checkLogged.check_logged
