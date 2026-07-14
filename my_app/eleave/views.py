@@ -2231,29 +2231,35 @@ def getPhInclusiveWorkDays(racf, year, apply_h, type, office):
 
 # New add Azure upload at 07/10/26 because of sharepoint issue
 def azureUpload(attachments, metadata):
-
     azure_conn = os.environ['AZURE_CONNECTION_STRING']
     azure_storage_name = os.environ['AZURE_CONTAINER_NAME']
+    
+    now = datetime.now()
+    date_str = f"{now.strftime('%Y')}{now.strftime('%m')}{now.strftime('%d')}"
 
     for attachment in attachments:
-
         try:
-            base_name = os.path.basename(attachment['name'])
-            name_part, ext_part = os.path.splitext(base_name)
             
-            base64_data = attachment['base64']
-            if ',' in base64_data:
-                base64_data = base64_data.split(',')[1]
+            if hasattr(attachment, 'filename'):
+                base_name = attachment.filename
+                file_bytes = attachment.read()
+            else:
                 
-            file_bytes = base64.b64decode(base64_data)
-
+                base_name = attachment.get('name', 'unknown_file')
+                base64_data = attachment.get('base64', '')
+                if ',' in base64_data:
+                    base64_data = base64_data.split(',')[1]
+                file_bytes = base64.b64decode(base64_data)
+            
+            name_part, ext_part = os.path.splitext(base_name)
             service_client = BlobServiceClient.from_connection_string(azure_conn)
             
+            new_base_name = f"{name_part}_{metadata['racf']}({date_str})"
+            blob_name = f"{new_base_name}{ext_part}"
+            
             counter = 1
-            blob_name = base_name
             blob_client = service_client.get_blob_client(container=azure_storage_name, blob=blob_name)
 
-            # Do checking with filename in storage, if current filename is existing, then rename _#1, #2, ...
             while True:
                 try:
                     blob_client.upload_blob(
@@ -2263,15 +2269,14 @@ def azureUpload(attachments, metadata):
                     )
                     break
                 except ResourceExistsError:
-                    blob_name = f"{name_part}({counter}){ext_part}"
+                    blob_name = f"{new_base_name}_{counter}{ext_part}"
                     blob_client = service_client.get_blob_client(container=azure_storage_name, blob=blob_name)
                     counter += 1
 
         except Exception as e:
-            return ({"result": f"UPLOAD {attachment['name']} FAILED : {e}", "Status_code": 409})
+            return ({"result": f"UPLOAD FAILED : {e}", "Status_code": 409})
 
     return ({"result": "PASSED", "Status_code": 200})
-
 
 
 
