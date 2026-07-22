@@ -361,6 +361,7 @@ def create_upload_session():
         }
         
         session_res = requests.post(session_url, headers=headers, json=session_payload)
+        print (session_res)
         if session_res.status_code != 200:
             return jsonify({"error_message": "Failed to create upload session"}), 502
             
