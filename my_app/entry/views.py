@@ -261,15 +261,15 @@ def establishSessionData(impersonatedUser=""):
                 endpoint,
                 headers={'Authorization': 'Bearer ' + token['access_token']}, stream=True
                 ) 
-            status_code = racf_response.status_code            
+            status_code = racf_response.status_code
 
             ## onPremisesSamAccountName stores RACF ID - you can use MS Graph and endpoint to see                  
 
             if status_code == 200:
                 pass
                 racf_data =  racf_response.json()                                   
-                racf = racf_data["onPremisesSamAccountName"].upper()   
-                access_token = token["access_token"]             
+                racf = racf_data["onPremisesSamAccountName"].upper()
+                access_token = token['access_token']            
             else:                 
                 raise Exception("RACF ID failed to validate in the Active Directory.  Please contact regional PBT for assistance!")                                
 

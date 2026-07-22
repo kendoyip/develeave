@@ -209,6 +209,10 @@ def getsharepointfiles():
             for item in items:
 
                 fields = item['listItem'].get('fields', {})
+                
+                # Skip if sharepointID is not match, only show the current sharepointID's files
+                if sharePointID != fields.get('SharePointID', ''):
+                    continue
 
                 sharePoint_items = { 
                     "folder": item['webUrl'],
@@ -318,119 +322,96 @@ def download_sharepoint_file():
         return jsonify({"error": "Error downloading SharePoint file"}), 502
 
 
-@spoint.route('/api/upload', methods=['POST'])
+@spoint.route('/api/upload_session', methods=['POST'])
 @checkLogged.check_logged
-def upload_file():
-    if request.method == 'POST':
-        print (list(request.headers))
-        try:
-            sharePointID = request.headers.get('sharePointID')
-            relative_url = request.headers.get('relative_url')
-            name = request.headers.get('name')
-            office = request.headers.get('office')
-            
-            print(f"DEBUG UPLOAD - Headers: SP_ID={sharePointID}, relative_url={relative_url}")
+def create_upload_session():
+    try:
+        relative_url = request.headers.get('relative_url')
+        req_data = request.get_json()
+        filename = req_data.get('filename')
 
-            access_token = session.get('access_token')
-            if not access_token:
-                print("DEBUG UPLOAD - No access token")
-                return jsonify({"error": "Unauthorized"}), 401
+        access_token = session.get('access_token')
+        if not access_token:
+            return jsonify({"error": "Unauthorized"}), 401
 
-            if 'files[]' not in request.files:
-                print("DEBUG UPLOAD - files[] not found in request.files")
-                return jsonify({"error": "No files"}), 406
+        site_id = getSiteID(access_token, os.environ['SHAREPOINT_SITE'])
+        drive_id = getDriveID(access_token, os.environ['SHAREPOINT_SITE'], os.environ['SHAREPOINT_DRIVE'])
 
-            files = request.files.getlist('files[]')
+        if not site_id or not drive_id:
+            return jsonify({"error": "Site or Drive not found"}), 404
 
-            site_id = getSiteID(access_token, os.environ['SHAREPOINT_SITE'])
-            drive_id = getDriveID(access_token, os.environ['SHAREPOINT_SITE'], os.environ['SHAREPOINT_DRIVE'])
+        folder_name = relative_url.strip('/').split('/')[-1] if relative_url else ''
+        
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
 
-            if not site_id or not drive_id:
-                print(f"DEBUG UPLOAD - Missing ID! site_id: {site_id}, drive_id: {drive_id}")
-                return jsonify({"error": "Site or Drive not found"}), 404
+        check_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives/{drive_id}/root:/{folder_name}/{filename}"
+        check_res = requests.get(check_url, headers=headers)
+        
+        if check_res.status_code == 200:
+            return jsonify({"error_message": "Same file name has already existed. Please use other file name !"}), 501
 
-            folder_name = relative_url.strip('/').split('/')[-1] if relative_url else ''
-            print(f"DEBUG UPLOAD - Extracted folder_name: {folder_name}")
-
-            headers = {
-                "Authorization": f"Bearer {access_token}",
-                "Content-Type": "application/json"
+        session_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives/{drive_id}/root:/{folder_name}/{filename}:/createUploadSession"
+        session_payload = {
+            "item": {
+                "@microsoft.graph.conflictBehavior": "fail"
             }
+        }
+        
+        session_res = requests.post(session_url, headers=headers, json=session_payload)
+        if session_res.status_code != 200:
+            return jsonify({"error_message": "Failed to create upload session"}), 502
+            
+        upload_url = session_res.json().get('uploadUrl')
+        return jsonify({"uploadUrl": upload_url}), 200
 
-            for file in files:
-                if file and allowed_file(file.filename):
-                    filename = file.filename
+    except Exception as e:
+        print("create_upload_session ERROR:", e)
+        return jsonify({"error_message": "Session Error"}), 507
 
-                    check_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives/{drive_id}/root:/{folder_name}/{filename}"
-                    check_res = requests.get(check_url, headers=headers)
-                    
-                    if check_res.status_code == 200:
-                        errMessage = "Same file name has already existed. Please use other file name !"
-                        return jsonify({"error_message": errMessage}), 501
 
-                    file.seek(0, os.SEEK_END)
-                    file_size = file.tell()
-                    file.seek(0)
+@spoint.route('/api/upload_metadata', methods=['POST'])
+@checkLogged.check_logged
+def upload_metadata():
+    try:
+        sharePointID = request.headers.get('sharePointID')
+        name = request.headers.get('name')
+        office = request.headers.get('office')
+        
+        req_data = request.get_json()
+        item_id = req_data.get('item_id')
 
-                    session_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives/{drive_id}/root:/{folder_name}/{filename}:/createUploadSession"
-                    session_payload = {
-                        "item": {
-                            "@microsoft.graph.conflictBehavior": "fail"
-                        }
-                    }
-                    
-                    session_res = requests.post(session_url, headers=headers, json=session_payload)
-                    if session_res.status_code != 200:
-                        print(f"DEBUG UPLOAD - Create session failed: {session_res.status_code} {session_res.text}")
-                        return jsonify({"error": "Failed to create upload session"}), 502
-                        
-                    upload_url = session_res.json().get('uploadUrl')
-                    chunk_size = 320 * 1024 * 10
+        access_token = session.get('access_token')
+        if not access_token:
+            return jsonify({"error": "Unauthorized"}), 401
 
-                    start = 0
-                    while True:
-                        chunk_data = file.read(chunk_size)
-                        if not chunk_data:
-                            break
-                        
-                        end = start + len(chunk_data) - 1
-                        chunk_headers = {
-                            "Content-Length": str(len(chunk_data)),
-                            "Content-Range": f"bytes {start}-{end}/{file_size}"
-                        }
-                        
-                        upload_res = requests.put(upload_url, headers=chunk_headers, data=chunk_data)
-                        
-                        if upload_res.status_code not in [200, 201, 202, 204]:
-                            print(f"DEBUG UPLOAD - Chunk upload failed: {upload_res.status_code} {upload_res.text}")
-                            return jsonify({"error": "Upload chunk failed"}), 502
-                            
-                        start = start + len(chunk_data)
+        site_id = getSiteID(access_token, os.environ['SHAREPOINT_SITE'])
+        drive_id = getDriveID(access_token, os.environ['SHAREPOINT_SITE'], os.environ['SHAREPOINT_DRIVE'])
 
-                    item_id = upload_res.json().get('id')
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
 
-                    if item_id:
-                        fields_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives/{drive_id}/items/{item_id}/listItem/fields"
-                        fields_payload = {
-                            "SharePointID": sharePointID,
-                            "StaffName": name,
-                            "OfficeName": office
-                        }
-                        fields_res = requests.patch(fields_url, headers=headers, json=fields_payload)
-                        
-                        if fields_res.status_code not in [200, 201]:
-                            print(f"DEBUG UPLOAD - Update fields failed: {fields_res.status_code} {fields_res.text}")
-                            return jsonify({"error": "Failed to update custom fields"}), 502
+        fields_url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives/{drive_id}/items/{item_id}/listItem/fields"
+        fields_payload = {
+            "SharePointID": sharePointID,
+            "StaffName": name,
+            "OfficeName": office
+        }
+        
+        fields_res = requests.patch(fields_url, headers=headers, json=fields_payload)
+        
+        if fields_res.status_code not in [200, 201]:
+            return jsonify({"error_message": "Failed to update custom fields"}), 502
 
-                else:
-                    return jsonify({"error": "Your file type is not allowed"}), 502
+        return jsonify({"message": "OK"}), 200
 
-            return jsonify({"message": "OK"}), 200
-                        
-        except Exception as e:
-            print("upload_file ERROR:", e)
-            return jsonify({"error": "Upload Error"}), 507
-
+    except Exception as e:
+        print("upload_metadata ERROR:", e)
+        return jsonify({"error_message": "Metadata Error"}), 507
 
 # def getSharepointfiles():       
 
