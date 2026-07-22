@@ -269,7 +269,7 @@ def establishSessionData(impersonatedUser=""):
                 pass
                 racf_data =  racf_response.json()                                   
                 racf = racf_data["onPremisesSamAccountName"].upper()   
-                access_token = result["access_token"]             
+                access_token = token["access_token"]             
             else:                 
                 raise Exception("RACF ID failed to validate in the Active Directory.  Please contact regional PBT for assistance!")                                
 
