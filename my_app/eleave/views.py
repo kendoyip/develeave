@@ -39,8 +39,8 @@ from dateutil import parser
 import time
 
 #ical
-import pytz
-from icalendar import Calendar, Event,  vText
+# import pytz
+# from icalendar import Calendar, Event,  vText
 
 
 
@@ -1140,95 +1140,6 @@ def getApplicationForm(ref, racf):
 
     return out
 
-def geticalFile(organizer, title, content, startDate, startTime, endDate, endTime, timeZone):
-    cal = Calendar()
-    cal.add('version', '2.0')
-
-    # Timezone to use for our dates - change as needed
-    # should get the timezone from local browser client -> console.log(Intl.DateTimeFormat().resolvedOptions().timeZone)
-    if len(timeZone) < 1:
-        tz = pytz.timezone("Asia/Shanghai") 
-    else:
-        tz = pytz.timezone(timeZone) 
-
-    event = Event()
-    #event.add('attendee', attendee)
-    event.add('organizer', organizer)
-    event.add('status', "confirmed")
-    event.add('CATEGORIES', vText('Red category'))
-    event.add('summary', title)
-    event.add('description', content)
-    event.add('location', "Online")
-    event.add('X-MICROSOFT-CDO-BUSYSTATUS', "FREE")
-
-    if startTime == "AM" and endTime == "AM": 
-        hour1 = 8
-        mintues1 = 00
-        hour2 = 13
-        mintues2 = 30
-    elif startTime == "AM" and endTime == "PM": 
-        hour1 = 8
-        mintues1 = 00
-        hour2 = 17
-        mintues2 = 30
-    elif startTime == "PM" and endTime == "PM": 
-        hour1 = 13
-        mintues1 = 30
-        hour2 = 17
-        mintues2 = 30
-    elif startTime == "PM" and endTime == "AM": 
-        hour1 = 13
-        mintues1 = 30
-        hour2 = 8
-        mintues2 = 00
-
-
-    day1 = datetime.strptime(startDate, '%m/%d/%Y').day
-    month1 = datetime.strptime(startDate, '%m/%d/%Y').month
-    year1 = datetime.strptime(startDate, '%m/%d/%Y').year
-
-    day2 = datetime.strptime(endDate, '%m/%d/%Y').day
-    month2 = datetime.strptime(endDate, '%m/%d/%Y').month
-    year2 = datetime.strptime(endDate, '%m/%d/%Y').year   
-
-    if startTime != "AM" and endTime != "PM":
-        start = tz.localize(datetime(year1,month1,day1,hour1,mintues1,0))
-        end = tz.localize(datetime(year2,month2,day2,hour2,mintues2,0))
-        event.add('dtstart', start)
-        event.add('dtend', end)
-    else:
-        start = datetime.strptime(startDate, '%m/%d/%Y')
-        end = datetime.strptime(endDate, '%m/%d/%Y')
-        end += timedelta(days=1)
-        start_date = start.astimezone(tz).strftime('%Y%m%d')
-        end_date = end.astimezone(tz).strftime('%Y%m%d')
-        event.add('dtstart;VALUE=DATE', start_date)
-        event.add('dtend;VALUE=DATE', end_date)
-
-    
-    event.add('dtstamp', tz.localize(datetime.now()))
-    event.add('created', tz.localize(datetime.now()))
-
-    # Adding events to calendar
-    cal.add_component(event)
-
-    #directory = str(Path(__file__).parent.parent) + "/"
-    #directory = "./"
-    #print("ics file will be generated at ", directory)
-    #f = open(os.path.join(directory, 'example.ics'), 'wb')
-    #f.write(cal.to_ical())
-    #f.close()
-
-    # Output 
-    out = BytesIO()
-    out.write(cal.to_ical())
-    #wb.save(out)
-    out.seek(0)
-
-    #out.close()            
-    print('sending file...')
-
-    return out
 
 def getAzurefiles(sharepoint_id):
     file_bytes_list = []
@@ -1539,12 +1450,10 @@ def sendEmail(psRecord, psRefNo, otherRefNo, psAction, psRequest, finalapprover 
             else:
                 message = "Dear Applicant, " + "\n" + "\n"  + "Approval Status :" + "\n" + Approval_Status  + "\n" + "Leave Period" + "\n" + leavePeriod + sickleavewithcertmsg + "\n" + icsmessage + "\n"  + "\n"  + "Thanks," + "\n" + "e-Leave"
             attached_list = [getApplicationForm(ref_no, psRecord["staff"]["racf"]),
-                             getSummaryForm(leaveContent[0]["year"], psRecord["staff"]["racf"]),
-                             geticalFile(sendTo,str(psRecord["staff"]["name"])+" - "+str(typename).title(),str(typename).title() + " Period : " + leavePeriod, start_date, start_time, end_date, end_time, tz)
+                             getSummaryForm(leaveContent[0]["year"], psRecord["staff"]["racf"])
                             ]
             filename_list = ["Leave Record for "+ otherRefNo + " ("+ psRecord["staff"]["racf"] + ")" + ".xlsx",
-                             "Leave Summary for " + str((leaveContent[0]["year"])) + " (" + str(psRecord["staff"]["racf"]) + ")" + ".xlsx",
-                             "Outlook Calendar.ics"
+                             "Leave Summary for " + str((leaveContent[0]["year"])) + " (" + str(psRecord["staff"]["racf"]) + ")" + ".xlsx"
                             ]
             
             if leaveContent[0]["type"] == "LVE04":
@@ -2283,6 +2192,8 @@ def azureUpload(attachments, metadata):
 
 def applyLeave (psInput):
 
+    # print (psInput)
+
     attachments = psInput.pop('attachments', [])
 
     # Special handling other leave
@@ -2313,6 +2224,7 @@ def applyLeave (psInput):
     timeZone = psInput['timeZone']
     spid = psInput['sharePointId']
     super = psInput['superUser']
+    addCalendar = psInput['addCalendar']
 
     # Determine Value
     is_other_leave = leaveTypes.find_one({'leave_type_id': type}).get('other_leave', False) if leaveTypes.find_one({'leave_type_id': type}) else False
@@ -2540,6 +2452,7 @@ def applyLeave (psInput):
                     'lastUpdate': racf, 
                     'updateDate': datetime.strftime(date.today(), "%Y-%m-%d"), 
                     'timeZone': timeZone,
+                    'addCalendar': addCalendar,
                     'approval': approvers,
                     'details': allDetails
                     }]
@@ -2552,6 +2465,10 @@ def applyLeave (psInput):
             updateRecord = [{"field" : "leave_record", "value" : updateLst}]
         
         update = updateDB2(id, updateRecord)
+
+        # Update addCalendar if there is change
+        if addCalendar != getStaffRecord(racf)['staff']['addCalendar']:
+            update = updateDB2(id, [{"field" : "staff.addCalendar", "value" : addCalendar}])
 
         # Make mataData for uploading azure
         meta = {
@@ -5269,3 +5186,95 @@ def download_azure_doc():
 
 #     # Insert the document into the collection
 #     mailsession.insert_one(doc)
+
+
+
+# def geticalFile(organizer, title, content, startDate, startTime, endDate, endTime, timeZone):
+#     cal = Calendar()
+#     cal.add('version', '2.0')
+
+#     # Timezone to use for our dates - change as needed
+#     # should get the timezone from local browser client -> console.log(Intl.DateTimeFormat().resolvedOptions().timeZone)
+#     if len(timeZone) < 1:
+#         tz = pytz.timezone("Asia/Shanghai") 
+#     else:
+#         tz = pytz.timezone(timeZone) 
+
+#     event = Event()
+#     #event.add('attendee', attendee)
+#     event.add('organizer', organizer)
+#     event.add('status', "confirmed")
+#     event.add('CATEGORIES', vText('Red category'))
+#     event.add('summary', title)
+#     event.add('description', content)
+#     event.add('location', "Online")
+#     event.add('X-MICROSOFT-CDO-BUSYSTATUS', "FREE")
+
+#     if startTime == "AM" and endTime == "AM": 
+#         hour1 = 8
+#         mintues1 = 00
+#         hour2 = 13
+#         mintues2 = 30
+#     elif startTime == "AM" and endTime == "PM": 
+#         hour1 = 8
+#         mintues1 = 00
+#         hour2 = 17
+#         mintues2 = 30
+#     elif startTime == "PM" and endTime == "PM": 
+#         hour1 = 13
+#         mintues1 = 30
+#         hour2 = 17
+#         mintues2 = 30
+#     elif startTime == "PM" and endTime == "AM": 
+#         hour1 = 13
+#         mintues1 = 30
+#         hour2 = 8
+#         mintues2 = 00
+
+
+#     day1 = datetime.strptime(startDate, '%m/%d/%Y').day
+#     month1 = datetime.strptime(startDate, '%m/%d/%Y').month
+#     year1 = datetime.strptime(startDate, '%m/%d/%Y').year
+
+#     day2 = datetime.strptime(endDate, '%m/%d/%Y').day
+#     month2 = datetime.strptime(endDate, '%m/%d/%Y').month
+#     year2 = datetime.strptime(endDate, '%m/%d/%Y').year   
+
+#     if startTime != "AM" and endTime != "PM":
+#         start = tz.localize(datetime(year1,month1,day1,hour1,mintues1,0))
+#         end = tz.localize(datetime(year2,month2,day2,hour2,mintues2,0))
+#         event.add('dtstart', start)
+#         event.add('dtend', end)
+#     else:
+#         start = datetime.strptime(startDate, '%m/%d/%Y')
+#         end = datetime.strptime(endDate, '%m/%d/%Y')
+#         end += timedelta(days=1)
+#         start_date = start.astimezone(tz).strftime('%Y%m%d')
+#         end_date = end.astimezone(tz).strftime('%Y%m%d')
+#         event.add('dtstart;VALUE=DATE', start_date)
+#         event.add('dtend;VALUE=DATE', end_date)
+
+    
+#     event.add('dtstamp', tz.localize(datetime.now()))
+#     event.add('created', tz.localize(datetime.now()))
+
+#     # Adding events to calendar
+#     cal.add_component(event)
+
+#     #directory = str(Path(__file__).parent.parent) + "/"
+#     #directory = "./"
+#     #print("ics file will be generated at ", directory)
+#     #f = open(os.path.join(directory, 'example.ics'), 'wb')
+#     #f.write(cal.to_ical())
+#     #f.close()
+
+#     # Output 
+#     out = BytesIO()
+#     out.write(cal.to_ical())
+#     #wb.save(out)
+#     out.seek(0)
+
+#     #out.close()            
+#     print('sending file...')
+
+#     return out

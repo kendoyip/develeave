@@ -15,8 +15,8 @@ import certifi
 from flask_mail import Mail
 
 # Below for SahrePoint
-from office365.runtime.auth.authentication_context import AuthenticationContext
-from office365.sharepoint.client_context import ClientContext
+# from office365.runtime.auth.authentication_context import AuthenticationContext
+# from office365.sharepoint.client_context import ClientContext
 # from office365.sharepoint.files.file import File
 # from office365.sharepoint.listitems.caml.caml_query import CamlQuery  
 # from office365.runtime.http.request_options import RequestOptions
@@ -30,19 +30,19 @@ database = os.environ['DEV_DATABASE'] if env == "LOCAL" else os.environ['DATABAS
 mail = Mail()
 db = client[database]
 
-site_url = 'https://macysinc.sharepoint.com/sites/MMGOverseas/'
-app_principal = {
-     'client_id': os.environ['SHAREPOINT_CLIENT_ID'],
-     'client_secret': os.environ['SHAREPOINT_CLIENT_SECRET'],
-}
+# site_url = 'https://macysinc.sharepoint.com/sites/MMGOverseas/'
+# app_principal = {
+#      'client_id': os.environ['SHAREPOINT_CLIENT_ID'],
+#      'client_secret': os.environ['SHAREPOINT_CLIENT_SECRET'],
+# }
 
-sharepoint_path =  os.environ['SHAREPOINT_PATH']
+# sharepoint_path =  os.environ['SHAREPOINT_PATH']
 
 # context_auth = AuthenticationContext(url=site_url)
 # context_auth.acquire_token_for_app(client_id=app_principal['client_id'], client_secret=app_principal['client_secret'])    
 # ctx = ClientContext(site_url, context_auth)
-ctx = None
-sharepoint_path = None
+# ctx = None
+# sharepoint_path = None
 
 def create_app():
 
@@ -114,7 +114,7 @@ def create_app():
     #from my_app.maintenance.views import maintenance
     app.register_blueprint(entry, url_prefix='')
     app.register_blueprint(eleave, url_prefix='/eleave')
-    #app.register_blueprint(spoint, url_prefix='/spoint')
+    app.register_blueprint(spoint, url_prefix='/spoint')
     #app.register_blueprint(maintenance, url_prefix='/maintenance')
 
 

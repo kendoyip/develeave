@@ -13,7 +13,8 @@ load_dotenv()
 import checkLogged
 import requests
 
-from my_app import database, db, sharepoint_path
+from my_app import database, db
+from msal import ConfidentialClientApplication
 
 #########################################################################################################
 ## Gloval variables  
@@ -270,7 +271,25 @@ def establishSessionData(impersonatedUser=""):
                 racf = racf_data["onPremisesSamAccountName"].upper()                
             else:                 
                 raise Exception("RACF ID failed to validate in the Active Directory.  Please contact regional PBT for assistance!")                                
-             
+
+        elif (os.environ['ENVIRONMENT']=="LOCAL"):
+
+            racf = current_app.config['APP_RACF'].upper()
+
+            # local using application authenticates to run
+            app = ConfidentialClientApplication(
+                    os.environ['CLIENT_ID'],
+                    authority=os.environ['AUTHORITY'],
+                    client_credential=os.environ['CLIENT_SECRET']
+            )
+
+            result = app.acquire_token_for_client(
+                scopes=["https://graph.microsoft.com/.default"]
+            )   
+
+            if "access_token" in result:
+                access_token = result["access_token"]
+
         else:
             racf = current_app.config['APP_RACF'].upper()
 
@@ -310,7 +329,11 @@ def establishSessionData(impersonatedUser=""):
        
         session['racf'] = sessionData["userProfile"]["racf"]        
         session['superUser'] = sessionData["userProfile"]["superUser"]        
-        sessionData["sharePointPath"] = sharepoint_path
+        sessionData["sharePointPath"] = os.environ["SHAREPOINT_DRIVE"]
+
+        if access_token:
+            session['access_token'] = access_token
+
 
         return sessionData, 200 
 
