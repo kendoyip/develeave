@@ -405,6 +405,7 @@ def upload_metadata():
         
         fields_res = requests.patch(fields_url, headers=headers, json=fields_payload)
         
+        print (fields_res)
         if fields_res.status_code not in [200, 201]:
             return jsonify({"error_message": "Failed to update custom fields"}), 502
 
