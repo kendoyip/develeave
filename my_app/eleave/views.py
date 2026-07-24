@@ -1358,13 +1358,13 @@ def addEventToCalendar(psRecord, psRefNo, attendees):
     if response.status_code == 201:
         event_data = response.json()
         event_id = event_data["id"]
-        # leave_index = next((i for i, r in enumerate(psRecord["leave_record"]) if r["ref_no"] == int(psRefNo)), None)
+        leave_index = next((i for i, r in enumerate(psRecord["leave_record"]) if r["ref_no"] == int(psRefNo)), None)
         
-        # if leave_index is not None:
-        #     eleaveDtl.update_one(
-        #         {"_id": psRecord["_id"]},
-        #         {"$set": {f"leave_record.{leave_index}.event_id": event_id}}
-        #     )
+        if leave_index is not None:
+            eleaveDtl.update_one(
+                {"_id": psRecord["_id"]},
+                {"$set": {f"leave_record.{leave_index}.event_id": event_id}}
+            )
     else:
         print(f"Getting the list failed with status code: {response.status_code}")
         print(response.json())     
