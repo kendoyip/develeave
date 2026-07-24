@@ -1289,6 +1289,13 @@ def addEventToCalendar(psRecord, psRefNo, attendees):
     # Leave information
     typename = list(leaveTypes.find({'leave_type_id': leaveContent[0]["type"]}))[0]['leave_type']
     applicant = psRecord["staff"]["email"]
+    applicant_name = psRecord["staff"]["name"]
+
+    # Format the display name
+    if "SICK" in typename:
+        typename = "Sick Leave"
+    else:
+        typename = typename.title()
 
     for leaveitem in leaveContent[0]["details"]:
         s_date = datetime.strptime(str(leaveitem.get("start_date")), '%Y-%m-%d').strftime('%Y-%m-%d')
@@ -1335,7 +1342,7 @@ def addEventToCalendar(psRecord, psRefNo, attendees):
 
     event = {
         
-            "subject": f"{typename}",
+            "subject": f"{typename} - {applicant_name}",
 
             "start": {
                 "dateTime": f"{s_date}T{hour1}:{mintues1}:00",
