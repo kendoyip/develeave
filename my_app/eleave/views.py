@@ -5,8 +5,6 @@ from flask import session, request, jsonify
 from openpyxl import load_workbook
 from openpyxl.cell import MergedCell
 from io import BytesIO 
-import io
-import zipfile
 from bson.objectid import ObjectId
 from datetime import datetime
 from openpyxl.utils.cell import coordinate_from_string, column_index_from_string
@@ -18,9 +16,6 @@ from email.mime.application import MIMEApplication
 from email.mime.text import MIMEText
 from copy import copy
 
-from azure.storage.blob import BlobServiceClient
-from azure.core.exceptions import ResourceExistsError
-
 import pandas as pd
 import gridfs
 import mimetypes
@@ -30,6 +25,7 @@ import json
 import requests
 import os
 import base64
+import pytz
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -39,8 +35,8 @@ from dateutil import parser
 import time
 
 #ical
-# import pytz
-# from icalendar import Calendar, Event,  vText
+import pytz
+from icalendar import Calendar, Event,  vText
 
 
 
@@ -1141,35 +1137,6 @@ def getApplicationForm(ref, racf):
     return out
 
 
-def getAzurefiles(sharepoint_id):
-    file_bytes_list = []
-    file_names_list = []
-    
-    if not sharepoint_id:
-        return file_bytes_list, file_names_list
-        
-    try:
-        azure_conn = os.environ['AZURE_CONNECTION_STRING']
-        azure_storage_name = os.environ['AZURE_CONTAINER_NAME']
-        
-        service_client = BlobServiceClient.from_connection_string(azure_conn)
-        container_client = service_client.get_container_client(azure_storage_name)
-        
-        blobs = container_client.list_blobs(include=['metadata'])
-        for blob in blobs:
-            if blob.metadata and blob.metadata.get('sharePointId') == str(sharepoint_id):
-                blob_client = container_client.get_blob_client(blob.name)
-                download_stream = blob_client.download_blob()
-                file_bytes = download_stream.readall()
-                
-                file_bytes_list.append(io.BytesIO(file_bytes))
-                file_names_list.append(blob.name)
-                
-    except Exception as e:
-        print(f"Error fetching Azure files: {str(e)}")
-        pass
-        
-    return file_bytes_list, file_names_list
 
 def postmarker(message, title, sendTo, sendCC, attachment=None, attachmentname=None):
 
@@ -1286,6 +1253,163 @@ def localSend(message, title, sendTo, sendCC, attachment=None, attachmentname=No
     server.sendmail(sender, (sendTo + sendCC), message.as_string())
     server.close()
 
+def convertRACFToAttendees(attendees):
+    attendees_list = []
+
+    for item in attendees.split(';'):
+        code = item.strip()
+        
+        if not code:
+            continue
+            
+        attendee = {
+            "emailAddress": {
+                "address": getStaffRecord(code)['staff']["email"]
+            },
+            "type": "optional"
+        }
+        attendees_list.append(attendee)
+
+    return attendees_list
+
+
+def addEventToCalendar(psRecord, psRefNo, attendees):
+
+    # Get full leave content
+    leaveContent = list(filter(lambda r: (r["ref_no"] == int(psRefNo)), psRecord["leave_record"]))
+
+    # Get access token from auth
+    access_token = session.get('access_token')
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json"   
+    }
+
+    # Leave information
+    typename = list(leaveTypes.find({'leave_type_id': leaveContent[0]["type"]}))[0]['leave_type']
+    applicant = psRecord["staff"]["email"]
+
+    for leaveitem in leaveContent[0]["details"]:
+        s_date = datetime.strptime(str(leaveitem.get("start_date")), '%Y-%m-%d').strftime('%Y-%m-%d')
+        e_date = datetime.strptime(str(leaveitem.get("end_date")), '%Y-%m-%d').strftime('%Y-%m-%d')
+        s_time = leaveitem.get("start_time")
+        e_time = leaveitem.get("end_time")
+
+        if s_time == "Full Day" and e_time == "Full Day":
+            s_time, e_time = "AM", "PM"
+
+    timeZone = leaveContent[0]['timeZone']
+
+    # Calculate start time and end time
+    if s_time == "AM" and e_time == "AM": 
+        hour1 = "08"
+        mintues1 = "00"
+        hour2 = "13"
+        mintues2 = "30"
+    elif s_time == "AM" and e_time == "PM": 
+        hour1 = "08"
+        mintues1 = "00"
+        hour2 = "17"
+        mintues2 = "30"
+    elif s_time == "PM" and e_time == "PM": 
+        hour1 = "13"
+        mintues1 = "30"
+        hour2 = "17"
+        mintues2 = "30"
+    elif s_time == "PM" and e_time == "AM": 
+        hour1 = "13"
+        mintues1 = "30"
+        hour2 = "08"
+        mintues2 = "00"
+
+
+    attendees_list = convertRACFToAttendees(attendees)
+    
+    attendees_list.insert(0, {
+        "emailAddress": {
+            "address": applicant
+        },
+        "type": "required"
+    })
+
+    event = {
+        
+            "subject": f"{typename}",
+
+            "start": {
+                "dateTime": f"{s_date}T{hour1}:{mintues1}:00",
+                "timeZone": f"{timeZone}"
+            },
+            "end": {
+                "dateTime": f"{e_date}T{hour2}:{mintues2}:00",
+                "timeZone": f"{timeZone}"
+            },
+            "attendees": attendees_list
+    }
+
+    # Construct the upload URL    
+    url = f"https://graph.microsoft.com/v1.0/me/events"
+            
+    print(f"Add event in the calendar...")
+            
+    response = requests.post(url, headers=headers, data=json.dumps(event))
+        
+    if response.status_code == 201:
+        event_data = response.json()
+        event_id = event_data["id"]
+        # leave_index = next((i for i, r in enumerate(psRecord["leave_record"]) if r["ref_no"] == int(psRefNo)), None)
+        
+        # if leave_index is not None:
+        #     eleaveDtl.update_one(
+        #         {"_id": psRecord["_id"]},
+        #         {"$set": {f"leave_record.{leave_index}.event_id": event_id}}
+        #     )
+    else:
+        print(f"Getting the list failed with status code: {response.status_code}")
+        print(response.json())     
+
+        leave_index = next((i for i, r in enumerate(psRecord["leave_record"]) if r["ref_no"] == int(psRefNo)), None)
+        
+        eleaveDtl.update_one(
+            {"_id": psRecord["_id"]},
+            {"$set": {f"leave_record.{leave_index}.event_id": "error"}}
+        )  
+        return "error" 
+
+def cancelCalendar(event_id):
+
+    # Get access token from auth
+    access_token = session.get('access_token')
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json"   
+    }
+
+    # content
+    body = {
+        "comment" : "Meeting Cancelled."
+    }
+
+                    
+    # Construct the api URL    
+    url = f"https://graph.microsoft.com/v1.0/me/events/{event_id}/cancel"
+            
+    print(f"Deleting the event in the calendar...")
+           
+    response = requests.post(url, headers=headers, data=json.dumps(body))
+        
+    if response.status_code in [200, 201, 202]:
+        print("Calendar event deleted successfully !")
+        if response.status_code == 201:
+            event_data = response.json()
+            event_id = event_data["id"] # Extract event id            
+            
+    else:
+        print(f"Getting the list failed with status code: {response.status_code}")
+        print(response.json())     
+
 def sendEmail(psRecord, psRefNo, otherRefNo, psAction, psRequest, finalapprover = 1, currentapprover = 1):
 
 
@@ -1365,11 +1489,9 @@ def sendEmail(psRecord, psRefNo, otherRefNo, psAction, psRequest, finalapprover 
 
     # Sharepoint document
     sickleavewithcertmsg = ""
-    # site = "https://macysinc.sharepoint.com/sites/MMGOverseas/eleave" + str(leaveContent[0]["year"]) + "/Forms/AllItems.aspx?id=%2Fsites%2FMMGOverseas%2Feleave" + str(leaveContent[0]["year"]) +"%2F" + str(psRecord["staff"]["racf"]) + "%2F&FilterType1=Text&viewid=720379f5-eb23-410f-81d1-f4e43a1a1cab&FilterField1=SharePointID&FilterValue1=" + str(leaveContent[0]["sharePointId"])
-    # if leaveContent[0]["type"] == "LVE04": sickleavewithcertmsg = "\n" + "Please download the supporting document(s) via the SharePoint link: " + "\n" + str(site)
-    # else: sickleavewithcertmsg = ""
-
-
+    site = "https://macysinc.sharepoint.com/sites/MMGOverseas/eleave" + str(leaveContent[0]["year"]) + "/Forms/AllItems.aspx?id=%2Fsites%2FMMGOverseas%2Feleave" + str(leaveContent[0]["year"]) +"%2F" + str(psRecord["staff"]["racf"]) + "%2F&FilterType1=Text&viewid=720379f5-eb23-410f-81d1-f4e43a1a1cab&FilterField1=SharePointID&FilterValue1=" + str(leaveContent[0]["sharePointId"])
+    if leaveContent[0]["type"] == "LVE04": sickleavewithcertmsg = "\n" + "Please download the supporting document(s) via the SharePoint link: " + "\n" + str(site)
+    else: sickleavewithcertmsg = ""
 
     # ical file
     icsmessage = "(Optional) You may double-click the Outlook Calendar.ics to add this event to your calendar.  If you cancel it later, you will need to manually remove this event from the calendar. "
@@ -1450,24 +1572,24 @@ def sendEmail(psRecord, psRefNo, otherRefNo, psAction, psRequest, finalapprover 
             else:
                 message = "Dear Applicant, " + "\n" + "\n"  + "Approval Status :" + "\n" + Approval_Status  + "\n" + "Leave Period" + "\n" + leavePeriod + sickleavewithcertmsg + "\n" + icsmessage + "\n"  + "\n"  + "Thanks," + "\n" + "e-Leave"
             attached_list = [getApplicationForm(ref_no, psRecord["staff"]["racf"]),
-                             getSummaryForm(leaveContent[0]["year"], psRecord["staff"]["racf"])
+                             getSummaryForm(leaveContent[0]["year"], psRecord["staff"]["racf"]),
+                             geticalFile(sendTo,str(psRecord["staff"]["name"])+" - "+str(typename).title(),str(typename).title() + " Period : " + leavePeriod, start_date, start_time, end_date, end_time, tz)
                             ]
             filename_list = ["Leave Record for "+ otherRefNo + " ("+ psRecord["staff"]["racf"] + ")" + ".xlsx",
-                             "Leave Summary for " + str((leaveContent[0]["year"])) + " (" + str(psRecord["staff"]["racf"]) + ")" + ".xlsx"
+                             "Leave Summary for " + str((leaveContent[0]["year"])) + " (" + str(psRecord["staff"]["racf"]) + ")" + ".xlsx",
+                             "Outlook Calendar.ics"
                             ]
-            
-            if leaveContent[0]["type"] == "LVE04":
-                target_spid = str(leaveContent[0]["sharePointId"])
-                print (target_spid)
-                if target_spid:
-                    azure_file_bytes, azure_file_names = getAzurefiles(target_spid)
-                    attached_list.extend(azure_file_bytes)
-                    filename_list.extend(azure_file_names)
-                    print (azure_file_names)
             try:
                 postmarker(message, title, sendTo, sendCc, attached_list, filename_list)
             except:
                 localSend(message, title, sendTo, sendCc, attached_list, filename_list)
+
+            addCalendar = leaveContent[0]['addCalendar']
+
+            if addCalendar:
+                attendees = psRecord["staff"]["calendarAttendees"]
+                addEventToCalendar(psRecord, psRefNo, attendees)
+
     # Reject end instantly (Apply)
     if psAction == df['gcActionReject'][0] and (psRequest == df['gcActionApply'][0]):
         sendTo = psRecord["staff"]["alteremail"] if psRecord["staff"]["alteremail"] is not None else psRecord["staff"]["email"]
@@ -1500,6 +1622,12 @@ def sendEmail(psRecord, psRefNo, otherRefNo, psAction, psRequest, finalapprover 
                 postmarker(message, title, sendTo, sendCc, None, None)
             except:
                 localSend(message, title, sendTo, sendCc)
+
+            addCalendar = leaveContent[0]['addCalendar']
+
+            if addCalendar:
+                event_id = leaveContent[0]['event_id']
+                cancelCalendar(event_id)
 
     # Send pending leave to next approver (Cancel)
     if (finalapprover > currentapprover) and (psAction == df['gcActionApprove'][0] and psRequest == df['gcActionCancel'][0]):
@@ -2138,63 +2266,12 @@ def getPhInclusiveWorkDays(racf, year, apply_h, type, office):
 
     return float(result)
 
-# New add Azure upload at 07/10/26 because of sharepoint issue
-def azureUpload(attachments, metadata):
-    azure_conn = os.environ['AZURE_CONNECTION_STRING']
-    azure_storage_name = os.environ['AZURE_CONTAINER_NAME']
-    
-    now = datetime.now()
-    date_str = f"{now.strftime('%Y')}{now.strftime('%m')}{now.strftime('%d')}"
-
-    for attachment in attachments:
-        try:
-            
-            if hasattr(attachment, 'filename'):
-                base_name = attachment.filename
-                file_bytes = attachment.read()
-            else:
-                
-                base_name = attachment.get('name', 'unknown_file')
-                base64_data = attachment.get('base64', '')
-                if ',' in base64_data:
-                    base64_data = base64_data.split(',')[1]
-                file_bytes = base64.b64decode(base64_data)
-            
-            name_part, ext_part = os.path.splitext(base_name)
-            service_client = BlobServiceClient.from_connection_string(azure_conn)
-            
-            new_base_name = f"{name_part}_{metadata['racf']}({date_str})"
-            blob_name = f"{new_base_name}{ext_part}"
-            
-            counter = 1
-            blob_client = service_client.get_blob_client(container=azure_storage_name, blob=blob_name)
-
-            while True:
-                try:
-                    blob_client.upload_blob(
-                        file_bytes, 
-                        overwrite=False, 
-                        metadata=metadata
-                    )
-                    break
-                except ResourceExistsError:
-                    blob_name = f"{new_base_name}_{counter}{ext_part}"
-                    blob_client = service_client.get_blob_client(container=azure_storage_name, blob=blob_name)
-                    counter += 1
-
-        except Exception as e:
-            return ({"result": f"UPLOAD FAILED : {e}", "Status_code": 409})
-
-    return ({"result": "PASSED", "Status_code": 200})
-
 
 
 
 def applyLeave (psInput):
 
     # print (psInput)
-
-    attachments = psInput.pop('attachments', [])
 
     # Special handling other leave
     if psInput['otherLeaveRef'] == "":
@@ -2470,17 +2547,6 @@ def applyLeave (psInput):
         if addCalendar != getStaffRecord(racf)['staff']['addCalendar']:
             update = updateDB2(id, [{"field" : "staff.addCalendar", "value" : addCalendar}])
 
-        # Make mataData for uploading azure
-        meta = {
-            'sharePointId': str(spid),
-            "ref_no": str(ref_no),
-            'racf': str(racf)
-        }
-
-        upload_result = azureUpload(attachments, meta)
-
-        if upload_result['Status_code'] != 200:
-            return ({"pass": False, "error_message" : upload_result['result'], "result": None,  "Status_code": upload_result['Status_code']})
 
         if update['pass']:
             sendEmail(getStaffRecord(racf), ref_no, otherRefNo, df['gcActionApply'][0], df['gcActionApply'][0], 1, 1)
@@ -3570,7 +3636,6 @@ def apiPartnersLeave():
 #@app.route("/api/applyleave", methods=['POST'])
 def apiApplyLeave():    
     psInput = json.loads(request.form.get('entireLeaveRequest'))
-    psInput['attachments'] = request.files.getlist('attachments')
     
     result = applyLeave(psInput)
     
@@ -3932,6 +3997,8 @@ def cancelRequest(psInput):
             localSend(message, title, sendTo, sendCc)
 
 
+
+
         return ({"pass": True, "error_message" : None, "result": [], "status_code": 200}) 
     else:
         return ({"pass": False, "error_message" : "Cancel failed, please check the Approval #", "result": [], "status_code": 810}) 
@@ -4203,10 +4270,6 @@ def apiSpecialLeaveRefNo():
 def apiSubmitRequest():    
     psInput = request.form.to_dict()
     
-    attachments = request.files.getlist("attachment")
-    if attachments:
-        psInput['attachments'] = attachments
-
     result = submitRequest(psInput)
     
     try: 
@@ -4246,74 +4309,74 @@ def apiRejectRequest():
     except:
         return jsonify(result) # postman
 
-@eleave.route('/api/downloadAzureDoc', methods=['POST'])
-@checkLogged.check_logged
-def download_azure_doc():
-    try:
-        data = request.json
-        doc_id = str(data.get('docId'))
+# @eleave.route('/api/downloadAzureDoc', methods=['POST'])
+# @checkLogged.check_logged
+# def download_azure_doc():
+#     try:
+#         data = request.json
+#         doc_id = str(data.get('docId'))
         
-        if not doc_id:
-            return jsonify({"error_message": "Missing document ID"}), 400
+#         if not doc_id:
+#             return jsonify({"error_message": "Missing document ID"}), 400
 
-        azure_conn = os.environ['AZURE_CONNECTION_STRING']
-        azure_storage_name = os.environ['AZURE_CONTAINER_NAME']
+#         azure_conn = os.environ['AZURE_CONNECTION_STRING']
+#         azure_storage_name = os.environ['AZURE_CONTAINER_NAME']
         
-        service_client = BlobServiceClient.from_connection_string(azure_conn)
-        container_client = service_client.get_container_client(azure_storage_name)
+#         service_client = BlobServiceClient.from_connection_string(azure_conn)
+#         container_client = service_client.get_container_client(azure_storage_name)
         
-        target_blobs = []
-        ref_no = None
-        racf = None
+#         target_blobs = []
+#         ref_no = None
+#         racf = None
         
-        blobs = container_client.list_blobs(include=['metadata'])
-        for blob in blobs:
-            if blob.metadata and blob.metadata.get('sharePointId') == doc_id:
-                target_blobs.append(blob.name)
+#         blobs = container_client.list_blobs(include=['metadata'])
+#         for blob in blobs:
+#             if blob.metadata and blob.metadata.get('sharePointId') == doc_id:
+#                 target_blobs.append(blob.name)
                 
-                if not ref_no:
-                    ref_no = blob.metadata.get('ref_no')
-                if not racf:
-                    racf = blob.metadata.get('racf')
+#                 if not ref_no:
+#                     ref_no = blob.metadata.get('ref_no')
+#                 if not racf:
+#                     racf = blob.metadata.get('racf')
                 
-        if not target_blobs:
-            return jsonify({"error_message": "Document not found in Azure Storage"}), 404
+#         if not target_blobs:
+#             return jsonify({"error_message": "Document not found in Azure Storage"}), 404
             
-        if len(target_blobs) == 1:
-            blob_client = container_client.get_blob_client(target_blobs[0])
-            download_stream = blob_client.download_blob()
-            file_bytes = download_stream.readall()
+#         if len(target_blobs) == 1:
+#             blob_client = container_client.get_blob_client(target_blobs[0])
+#             download_stream = blob_client.download_blob()
+#             file_bytes = download_stream.readall()
             
-            return send_file(
-                io.BytesIO(file_bytes),
-                download_name=target_blobs[0],
-                as_attachment=True
-            )
-        else:
-            memory_file = io.BytesIO()
-            with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
-                for blob_name in target_blobs:
-                    blob_client = container_client.get_blob_client(blob_name)
-                    download_stream = blob_client.download_blob()
-                    file_bytes = download_stream.readall()
+#             return send_file(
+#                 io.BytesIO(file_bytes),
+#                 download_name=target_blobs[0],
+#                 as_attachment=True
+#             )
+#         else:
+#             memory_file = io.BytesIO()
+#             with zipfile.ZipFile(memory_file, 'w', zipfile.ZIP_DEFLATED) as zf:
+#                 for blob_name in target_blobs:
+#                     blob_client = container_client.get_blob_client(blob_name)
+#                     download_stream = blob_client.download_blob()
+#                     file_bytes = download_stream.readall()
                     
-                    zf.writestr(blob_name, file_bytes)
+#                     zf.writestr(blob_name, file_bytes)
             
-            memory_file.seek(0)
+#             memory_file.seek(0)
             
-            if ref_no and racf:
-                zip_filename = f"{ref_no} ({racf}).zip"
-            else:
-                zip_filename = f"documents_{doc_id}.zip"
+#             if ref_no and racf:
+#                 zip_filename = f"{ref_no} ({racf}).zip"
+#             else:
+#                 zip_filename = f"documents_{doc_id}.zip"
             
-            return send_file(
-                memory_file,
-                download_name=zip_filename,
-                as_attachment=True
-            )
+#             return send_file(
+#                 memory_file,
+#                 download_name=zip_filename,
+#                 as_attachment=True
+#             )
 
-    except Exception as e:
-        return jsonify({"error_message": f"Failed to download document: {str(e)}"}), 500
+#     except Exception as e:
+#         return jsonify({"error_message": f"Failed to download document: {str(e)}"}), 500
 
 
 
@@ -5189,92 +5252,171 @@ def download_azure_doc():
 
 
 
-# def geticalFile(organizer, title, content, startDate, startTime, endDate, endTime, timeZone):
-#     cal = Calendar()
-#     cal.add('version', '2.0')
+def geticalFile(organizer, title, content, startDate, startTime, endDate, endTime, timeZone):
+    cal = Calendar()
+    cal.add('version', '2.0')
 
-#     # Timezone to use for our dates - change as needed
-#     # should get the timezone from local browser client -> console.log(Intl.DateTimeFormat().resolvedOptions().timeZone)
-#     if len(timeZone) < 1:
-#         tz = pytz.timezone("Asia/Shanghai") 
-#     else:
-#         tz = pytz.timezone(timeZone) 
+    # Timezone to use for our dates - change as needed
+    # should get the timezone from local browser client -> console.log(Intl.DateTimeFormat().resolvedOptions().timeZone)
+    if len(timeZone) < 1:
+        tz = pytz.timezone("Asia/Shanghai") 
+    else:
+        tz = pytz.timezone(timeZone) 
 
-#     event = Event()
-#     #event.add('attendee', attendee)
-#     event.add('organizer', organizer)
-#     event.add('status', "confirmed")
-#     event.add('CATEGORIES', vText('Red category'))
-#     event.add('summary', title)
-#     event.add('description', content)
-#     event.add('location', "Online")
-#     event.add('X-MICROSOFT-CDO-BUSYSTATUS', "FREE")
+    event = Event()
+    #event.add('attendee', attendee)
+    event.add('organizer', organizer)
+    event.add('status', "confirmed")
+    event.add('CATEGORIES', vText('Red category'))
+    event.add('summary', title)
+    event.add('description', content)
+    event.add('location', "Online")
+    event.add('X-MICROSOFT-CDO-BUSYSTATUS', "FREE")
 
-#     if startTime == "AM" and endTime == "AM": 
-#         hour1 = 8
-#         mintues1 = 00
-#         hour2 = 13
-#         mintues2 = 30
-#     elif startTime == "AM" and endTime == "PM": 
-#         hour1 = 8
-#         mintues1 = 00
-#         hour2 = 17
-#         mintues2 = 30
-#     elif startTime == "PM" and endTime == "PM": 
-#         hour1 = 13
-#         mintues1 = 30
-#         hour2 = 17
-#         mintues2 = 30
-#     elif startTime == "PM" and endTime == "AM": 
-#         hour1 = 13
-#         mintues1 = 30
-#         hour2 = 8
-#         mintues2 = 00
+    if startTime == "AM" and endTime == "AM": 
+        hour1 = 8
+        mintues1 = 00
+        hour2 = 13
+        mintues2 = 30
+    elif startTime == "AM" and endTime == "PM": 
+        hour1 = 8
+        mintues1 = 00
+        hour2 = 17
+        mintues2 = 30
+    elif startTime == "PM" and endTime == "PM": 
+        hour1 = 13
+        mintues1 = 30
+        hour2 = 17
+        mintues2 = 30
+    elif startTime == "PM" and endTime == "AM": 
+        hour1 = 13
+        mintues1 = 30
+        hour2 = 8
+        mintues2 = 00
 
 
-#     day1 = datetime.strptime(startDate, '%m/%d/%Y').day
-#     month1 = datetime.strptime(startDate, '%m/%d/%Y').month
-#     year1 = datetime.strptime(startDate, '%m/%d/%Y').year
+    day1 = datetime.strptime(startDate, '%m/%d/%Y').day
+    month1 = datetime.strptime(startDate, '%m/%d/%Y').month
+    year1 = datetime.strptime(startDate, '%m/%d/%Y').year
 
-#     day2 = datetime.strptime(endDate, '%m/%d/%Y').day
-#     month2 = datetime.strptime(endDate, '%m/%d/%Y').month
-#     year2 = datetime.strptime(endDate, '%m/%d/%Y').year   
+    day2 = datetime.strptime(endDate, '%m/%d/%Y').day
+    month2 = datetime.strptime(endDate, '%m/%d/%Y').month
+    year2 = datetime.strptime(endDate, '%m/%d/%Y').year   
 
-#     if startTime != "AM" and endTime != "PM":
-#         start = tz.localize(datetime(year1,month1,day1,hour1,mintues1,0))
-#         end = tz.localize(datetime(year2,month2,day2,hour2,mintues2,0))
-#         event.add('dtstart', start)
-#         event.add('dtend', end)
-#     else:
-#         start = datetime.strptime(startDate, '%m/%d/%Y')
-#         end = datetime.strptime(endDate, '%m/%d/%Y')
-#         end += timedelta(days=1)
-#         start_date = start.astimezone(tz).strftime('%Y%m%d')
-#         end_date = end.astimezone(tz).strftime('%Y%m%d')
-#         event.add('dtstart;VALUE=DATE', start_date)
-#         event.add('dtend;VALUE=DATE', end_date)
+    if startTime != "AM" and endTime != "PM":
+        start = tz.localize(datetime(year1,month1,day1,hour1,mintues1,0))
+        end = tz.localize(datetime(year2,month2,day2,hour2,mintues2,0))
+        event.add('dtstart', start)
+        event.add('dtend', end)
+    else:
+        start = datetime.strptime(startDate, '%m/%d/%Y')
+        end = datetime.strptime(endDate, '%m/%d/%Y')
+        end += timedelta(days=1)
+        start_date = start.astimezone(tz).strftime('%Y%m%d')
+        end_date = end.astimezone(tz).strftime('%Y%m%d')
+        event.add('dtstart;VALUE=DATE', start_date)
+        event.add('dtend;VALUE=DATE', end_date)
 
     
-#     event.add('dtstamp', tz.localize(datetime.now()))
-#     event.add('created', tz.localize(datetime.now()))
+    event.add('dtstamp', tz.localize(datetime.now()))
+    event.add('created', tz.localize(datetime.now()))
 
-#     # Adding events to calendar
-#     cal.add_component(event)
+    # Adding events to calendar
+    cal.add_component(event)
 
-#     #directory = str(Path(__file__).parent.parent) + "/"
-#     #directory = "./"
-#     #print("ics file will be generated at ", directory)
-#     #f = open(os.path.join(directory, 'example.ics'), 'wb')
-#     #f.write(cal.to_ical())
-#     #f.close()
+    #directory = str(Path(__file__).parent.parent) + "/"
+    #directory = "./"
+    #print("ics file will be generated at ", directory)
+    #f = open(os.path.join(directory, 'example.ics'), 'wb')
+    #f.write(cal.to_ical())
+    #f.close()
 
-#     # Output 
-#     out = BytesIO()
-#     out.write(cal.to_ical())
-#     #wb.save(out)
-#     out.seek(0)
+    # Output 
+    out = BytesIO()
+    out.write(cal.to_ical())
+    #wb.save(out)
+    out.seek(0)
 
-#     #out.close()            
-#     print('sending file...')
+    #out.close()            
+    print('sending file...')
 
-#     return out
+    return out
+
+## New add Azure upload at 07/10/26 because of sharepoint issue
+# def azureUpload(attachments, metadata):
+#     azure_conn = os.environ['AZURE_CONNECTION_STRING']
+#     azure_storage_name = os.environ['AZURE_CONTAINER_NAME']
+    
+#     now = datetime.now()
+#     date_str = f"{now.strftime('%Y')}{now.strftime('%m')}{now.strftime('%d')}"
+
+#     for attachment in attachments:
+#         try:
+            
+#             if hasattr(attachment, 'filename'):
+#                 base_name = attachment.filename
+#                 file_bytes = attachment.read()
+#             else:
+                
+#                 base_name = attachment.get('name', 'unknown_file')
+#                 base64_data = attachment.get('base64', '')
+#                 if ',' in base64_data:
+#                     base64_data = base64_data.split(',')[1]
+#                 file_bytes = base64.b64decode(base64_data)
+            
+#             name_part, ext_part = os.path.splitext(base_name)
+#             service_client = BlobServiceClient.from_connection_string(azure_conn)
+            
+#             new_base_name = f"{name_part}_{metadata['racf']}({date_str})"
+#             blob_name = f"{new_base_name}{ext_part}"
+            
+#             counter = 1
+#             blob_client = service_client.get_blob_client(container=azure_storage_name, blob=blob_name)
+
+#             while True:
+#                 try:
+#                     blob_client.upload_blob(
+#                         file_bytes, 
+#                         overwrite=False, 
+#                         metadata=metadata
+#                     )
+#                     break
+#                 except ResourceExistsError:
+#                     blob_name = f"{new_base_name}_{counter}{ext_part}"
+#                     blob_client = service_client.get_blob_client(container=azure_storage_name, blob=blob_name)
+#                     counter += 1
+
+#         except Exception as e:
+#             return ({"result": f"UPLOAD FAILED : {e}", "Status_code": 409})
+
+#     return ({"result": "PASSED", "Status_code": 200})
+
+# def getAzurefiles(sharepoint_id):
+#     file_bytes_list = []
+#     file_names_list = []
+    
+#     if not sharepoint_id:
+#         return file_bytes_list, file_names_list
+        
+#     try:
+#         azure_conn = os.environ['AZURE_CONNECTION_STRING']
+#         azure_storage_name = os.environ['AZURE_CONTAINER_NAME']
+        
+#         service_client = BlobServiceClient.from_connection_string(azure_conn)
+#         container_client = service_client.get_container_client(azure_storage_name)
+        
+#         blobs = container_client.list_blobs(include=['metadata'])
+#         for blob in blobs:
+#             if blob.metadata and blob.metadata.get('sharePointId') == str(sharepoint_id):
+#                 blob_client = container_client.get_blob_client(blob.name)
+#                 download_stream = blob_client.download_blob()
+#                 file_bytes = download_stream.readall()
+                
+#                 file_bytes_list.append(io.BytesIO(file_bytes))
+#                 file_names_list.append(blob.name)
+                
+#     except Exception as e:
+#         print(f"Error fetching Azure files: {str(e)}")
+#         pass
+        
+#     return file_bytes_list, file_names_list

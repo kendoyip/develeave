@@ -195,7 +195,7 @@ def getsharepointfiles():
         }
 
         site_id = getSiteID(access_token, os.environ['SHAREPOINT_SITE'])
-        drive_id = getDriveID(access_token, os.environ['SHAREPOINT_SITE'], os.environ['SHAREPOINT_DRIVE'])
+        drive_id = getDriveID(access_token, os.environ['SHAREPOINT_SITE'], os.environ['SHAREPOINT_DRIVE'] + str(year))
 
         url = f"https://graph.microsoft.com/v1.0/sites/{site_id}/drives/{drive_id}/root:/{folder}:/children?$expand=listItem"
 
@@ -209,7 +209,7 @@ def getsharepointfiles():
             for item in items:
 
                 fields = item['listItem'].get('fields', {})
-                
+
                 # Skip if sharepointID is not match, only show the current sharepointID's files
                 if sharePointID != fields.get('SharePointID', ''):
                     continue
@@ -329,13 +329,14 @@ def create_upload_session():
         relative_url = request.headers.get('relative_url')
         req_data = request.get_json()
         filename = req_data.get('filename')
+        year =  request.headers.get('year')
 
         access_token = session.get('access_token')
         if not access_token:
             return jsonify({"error": "Unauthorized"}), 401
 
         site_id = getSiteID(access_token, os.environ['SHAREPOINT_SITE'])
-        drive_id = getDriveID(access_token, os.environ['SHAREPOINT_SITE'], os.environ['SHAREPOINT_DRIVE'])
+        drive_id = getDriveID(access_token, os.environ['SHAREPOINT_SITE'], os.environ['SHAREPOINT_DRIVE'] + str(year))
 
         if not site_id or not drive_id:
             return jsonify({"error": "Site or Drive not found"}), 404
@@ -380,6 +381,8 @@ def upload_metadata():
         sharePointID = request.headers.get('sharePointID')
         name = request.headers.get('name')
         office = request.headers.get('office')
+        year = request.headers.get('year')
+
         
         req_data = request.get_json()
         item_id = req_data.get('item_id')
@@ -389,7 +392,7 @@ def upload_metadata():
             return jsonify({"error": "Unauthorized"}), 401
 
         site_id = getSiteID(access_token, os.environ['SHAREPOINT_SITE'])
-        drive_id = getDriveID(access_token, os.environ['SHAREPOINT_SITE'], os.environ['SHAREPOINT_DRIVE'])
+        drive_id = getDriveID(access_token, os.environ['SHAREPOINT_SITE'], os.environ['SHAREPOINT_DRIVE'] + str(year))
 
         headers = {
             "Authorization": f"Bearer {access_token}",
@@ -405,7 +408,6 @@ def upload_metadata():
         
         fields_res = requests.patch(fields_url, headers=headers, json=fields_payload)
         
-        print (fields_res)
         if fields_res.status_code not in [200, 201]:
             return jsonify({"error_message": "Failed to update custom fields"}), 502
 
