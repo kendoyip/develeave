@@ -178,7 +178,7 @@ def logout():
 @checkLogged.check_logged
 def graphcall():
     token = _get_token_from_cache(json.loads(os.environ['SCOPE']))
-    if not token:
+    if not token or 'access_token' not in token:
         return redirect(url_for("entry.login"))
     graph_data = requests.get(  # Use token to call downstream service
         os.environ['ENDPOINT'],
@@ -254,7 +254,9 @@ def establishSessionData(impersonatedUser=""):
             endpoint = "https://graph.microsoft.com/beta/me"                    
             token = _get_token_from_cache(json.loads(os.environ['SCOPE']))
 
-            if not token and not os.environ:
+            print (token)
+
+            if not token and 'access_token' not in token:
                 return redirect(url_for("entry.login"))
 
             racf_response = requests.get(  # Use token to call downstream service

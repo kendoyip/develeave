@@ -245,6 +245,7 @@ def delete_sp_file():
         content = request.get_json() 
 
         file_id = content.get('_id')
+        year = content.get('year')
         if not file_id:
             return jsonify({"error": "Missing file ID"}), 400
 
@@ -259,7 +260,7 @@ def delete_sp_file():
         }
 
         site_id = getSiteID(access_token, os.environ['SHAREPOINT_SITE'])
-        drive_id = getDriveID(access_token, os.environ['SHAREPOINT_SITE'], os.environ['SHAREPOINT_DRIVE'])
+        drive_id = getDriveID(access_token, os.environ['SHAREPOINT_SITE'], os.environ['SHAREPOINT_DRIVE'] + str(year))
 
         if not site_id or not drive_id:
             return jsonify({"error": "Site or Drive not found"}), 404
@@ -284,7 +285,9 @@ def delete_sp_file():
 @checkLogged.check_logged
 def download_sharepoint_file():
     try:
+        print (request.args)
         file_id = request.args.get('uid')
+        year = request.args.get('year')
         
         if not file_id:
             return jsonify({"error": "Missing file ID"}), 400
@@ -298,7 +301,7 @@ def download_sharepoint_file():
         }
 
         site_id = getSiteID(access_token, os.environ['SHAREPOINT_SITE'])
-        drive_id = getDriveID(access_token, os.environ['SHAREPOINT_SITE'], os.environ['SHAREPOINT_DRIVE'])
+        drive_id = getDriveID(access_token, os.environ['SHAREPOINT_SITE'], os.environ['SHAREPOINT_DRIVE'] + str(year))
 
         if not site_id or not drive_id:
             return jsonify({"error": "Site or Drive not found"}), 404
