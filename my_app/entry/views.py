@@ -254,7 +254,6 @@ def establishSessionData(impersonatedUser=""):
             endpoint = "https://graph.microsoft.com/beta/me"                    
             token = _get_token_from_cache(json.loads(os.environ['SCOPE']))
 
-            print (token)
 
             if not token and 'access_token' not in token:
                 return redirect(url_for("entry.login"))
