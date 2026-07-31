@@ -370,7 +370,8 @@ def create_upload_session():
             return jsonify({"error_message": "Failed to create upload session"}), 502
             
         upload_url = session_res.json().get('uploadUrl')
-        return jsonify({"uploadUrl": upload_url}), 200
+        chunk_size_bytes = int(os.environ.get('UPLOAD_CHUNK_SIZE', 25)) * 1024 * 1024
+        return jsonify({"uploadUrl": upload_url, "chunkSize": chunk_size_bytes}), 200
 
     except Exception as e:
         print("create_upload_session ERROR:", e)
