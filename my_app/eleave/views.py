@@ -1530,6 +1530,12 @@ def sendEmail(psRecord, psRefNo, otherRefNo, psAction, psRequest, finalapprover 
     # Manual make application status per pending situation
     Approval_Status = applicationStatusForEmail(leaveContent, finalapprover, psRequest, psAction)
 
+    # Check addCalendar is true
+    addCalendarReminder = ""
+    if leaveContent[0]["addCalendar"]:
+        addCalendarReminder = "Reminder: Add to Outlook Calendar is enabled. This leave has been added to your calendar automatically. If the request is rejected or changed, you must manually remove or update the calendar entry." + "\n" + "\n"
+        cancelCalendarReminder = "Reminder: Add to Outlook Calendar is enabled. This leave has been canceled to your calendar automatically. If the request is rejected or changed, you must manually remove or update the calendar entry." + "\n" + "\n"
+
     # Apply/Cancel leave must send to approver 1
     if ((psRequest == df['gcActionApply'][0] and psAction == df['gcActionApply'][0])):
         # Send to approver 1 first 
@@ -1545,7 +1551,7 @@ def sendEmail(psRecord, psRefNo, otherRefNo, psAction, psRequest, finalapprover 
         sendTo = psRecord["staff"]["alteremail"] if psRecord["staff"]["alteremail"] is not None else psRecord["staff"]["email"]
         sendCc = ""
         title = "<E-LEAVE> " + str(psRecord["staff"]["name"]) + " (" + str(psRecord["staff"]["dept"]) + ") " + " - " + "Apply " + str(typename)
-        message = "Dear Applicant," + "\n" + "\n" + "Your application has been sent to your people leader for approval successfully. "  + "\n" + "\n" + "Leave Period" + "\n" + leavePeriod + "\n"  + "\n"  + "Thanks," + "\n" + "e-Leave"
+        message = "Dear Applicant," + "\n" + "\n" + "Your application has been sent to your people leader for approval successfully. "  + "\n" + "\n" + "Leave Period" + "\n" + leavePeriod + "\n"  + "\n" + addCalendarReminder + "Thanks," + "\n" + "e-Leave"
         try:
             postmarker(message, title, sendTo, sendCc, None, None)
         except:
@@ -1563,7 +1569,7 @@ def sendEmail(psRecord, psRefNo, otherRefNo, psAction, psRequest, finalapprover 
         sendTo = psRecord["staff"]["alteremail"] if psRecord["staff"]["alteremail"] is not None else psRecord["staff"]["email"]
         sendCc = ""
         title = "<E-LEAVE> " + str(psRecord["staff"]["name"]) + " (" + str(psRecord["staff"]["dept"]) + ") " + " - " + "Cancel " + str(typename)
-        message = "Dear Applicant," + "\n" + "\n" + "Your application has been sent to your people leader for cancel approval successfully. "  + "\n" + "\n" + "Leave Period" + "\n" + leavePeriod + "\n"  + "\n"  + "Thanks," + "\n" + "e-Leave"
+        message = "Dear Applicant," + "\n" + "\n" + "Your application has been sent to your people leader for cancel approval successfully. "  + "\n" + "\n" + "Leave Period" + "\n" + leavePeriod + "\n"  + "\n" + cancelCalendarReminder  + "Thanks," + "\n" + "e-Leave"
         try:
             postmarker(message, title, sendTo, sendCc, None, None)
         except:
@@ -1591,11 +1597,6 @@ def sendEmail(psRecord, psRefNo, otherRefNo, psAction, psRequest, finalapprover 
             except:
                 localSend(message, title, sendTo, sendCc, attached_list, filename_list)
 
-            addCalendar = leaveContent[0]['addCalendar']
-
-            if addCalendar:
-                attendees = psRecord["staff"]["calendarAttendees"]
-                addEventToCalendar(psRecord, psRefNo, attendees)
 
     # Reject end instantly (Apply)
     if psAction == df['gcActionReject'][0] and (psRequest == df['gcActionApply'][0]):
@@ -1630,11 +1631,6 @@ def sendEmail(psRecord, psRefNo, otherRefNo, psAction, psRequest, finalapprover 
             except:
                 localSend(message, title, sendTo, sendCc)
 
-            addCalendar = leaveContent[0]['addCalendar']
-
-            if addCalendar:
-                event_id = leaveContent[0]['event_id']
-                cancelCalendar(event_id)
 
     # Send pending leave to next approver (Cancel)
     if (finalapprover > currentapprover) and (psAction == df['gcActionApprove'][0] and psRequest == df['gcActionCancel'][0]):
@@ -2557,8 +2553,8 @@ def applyLeave (psInput):
 
         if update['pass']:
             sendEmail(getStaffRecord(racf), ref_no, otherRefNo, df['gcActionApply'][0], df['gcActionApply'][0], 1, 1)
-            
-
+            if addCalendar:
+                addEventToCalendar(getStaffRecord(racf), ref_no, getStaffRecord(racf)['staff']['calendarAttendees'])
         return update
 
 
