@@ -1,0 +1,26 @@
+name: Deploy Native App to AWS Elastic Beanstalk
+
+on:
+  push:
+    branches: [ "master" ] # Change to "master" if your default branch uses that name
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Generate deployment package
+        run: zip -r deploy.zip . -x "*.git*"
+
+      - name: Deploy to AWS Elastic Beanstalk
+        uses: einaregilsson/beanstalk-deploy@v22
+        with:
+          aws_access_key: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws_secret_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          application_name: develeave-aws
+          environment_name: Develeave-aws-env
+          version_label: ${{ github.sha }}
+          region: ap-northeast-1 # Change to your AWS Region (e.g., us-west-2, ap-northeast-1)
+          deployment_package: deploy.zip
