@@ -19,8 +19,8 @@ jobs:
         with:
           aws_access_key: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws_secret_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          application_name: develeave-aws
-          environment_name: Develeave-aws-env
+          application_name: develeave
+          environment_name: Develeave-env
           version_label: ${{ github.sha }}
           region: ap-northeast-1 # Change to your AWS Region (e.g., us-west-2, ap-northeast-1)
           deployment_package: deploy.zip
