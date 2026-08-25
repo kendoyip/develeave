@@ -22,6 +22,6 @@ jobs:
           application_name: develeave
           environment_name: Develeave-env
           version_label: ${{ github.sha }}
-          region: us-east-1# Change to your AWS Region (e.g., us-west-2, ap-northeast-1)
+          region: us-east-1 # Change to your AWS Region (e.g., us-west-2, ap-northeast-1)
           deployment_package: deploy.zip
           use_existing_version_if_available: true
